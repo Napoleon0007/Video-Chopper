@@ -246,6 +246,7 @@ def transcribe_words_chunked(model, audio_path, chunk_sec=30.0, overlap_sec=2.0,
         chunk = data[s_idx:e_idx]
         tmp = tempfile.mktemp(suffix=f'_chunk{chunk_idx}.wav')
         sf.write(tmp, chunk, sr)
+        final_chunk = (end >= total_sec - 0.05)
         try:
             segments, _info = model.transcribe(tmp, **WHISPER_KWARGS)
             for seg in segments:
@@ -267,8 +268,10 @@ def transcribe_words_chunked(model, audio_path, chunk_sec=30.0, overlap_sec=2.0,
                     })
         finally:
             os.unlink(tmp)
-        pos = end - overlap_sec
         chunk_idx += 1
+        if final_chunk:
+            break
+        pos = end - overlap_sec
 
     # Keep sorted just in case
     all_words.sort(key=lambda w: w['start'])
