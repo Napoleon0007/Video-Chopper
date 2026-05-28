@@ -43,7 +43,7 @@ def file_hash(path):
     return h.hexdigest()
 
 
-def cached_transcribe(model, audio_path, model_name, chunked=False, source=False):
+def cached_transcribe(model, audio_path, model_name, chunked=False, source=False, progress_cb=None):
     """Transcribe with on-disk cache keyed by file content + model + mode."""
     h = file_hash(audio_path)
     mode = 'chunked' if chunked else ('source' if source else 'single')
@@ -52,7 +52,7 @@ def cached_transcribe(model, audio_path, model_name, chunked=False, source=False
         with open(cache_path) as f:
             return json.load(f)
     if chunked:
-        words = transcribe_words_chunked(model, audio_path)
+        words = transcribe_words_chunked(model, audio_path, progress_cb=progress_cb)
     else:
         words = transcribe_words(model, audio_path, source=source)
     with open(cache_path, 'w') as f:
@@ -208,12 +208,16 @@ def transcribe_words(model, audio_path, source=False):
     return words
 
 
-def transcribe_words_chunked(model, audio_path, chunk_sec=30.0, overlap_sec=2.0):
+def transcribe_words_chunked(model, audio_path, chunk_sec=30.0, overlap_sec=2.0, progress_cb=None):
     """Force full coverage by transcribing fixed-size chunks independently.
 
     Whisper's internal bail-out (hallucination guard, no_speech) sometimes
     abandons the tail of a file with repetitive content. Splitting into
     chunks guarantees every section gets attempted.
+
+    progress_cb(chunk_idx, total_chunks) is called before each chunk so the
+    job status can show progress instead of sitting frozen at the start
+    percent for the full duration of the transcription.
     """
     import soundfile as sf
     data, sr = sf.read(audio_path, dtype='float32', always_2d=False)
@@ -221,10 +225,19 @@ def transcribe_words_chunked(model, audio_path, chunk_sec=30.0, overlap_sec=2.0)
         data = data[:, 0]
     total_sec = len(data) / sr
 
+    # Estimate total chunk count
+    step = max(0.1, chunk_sec - overlap_sec)
+    total_chunks = max(1, int((total_sec + step - 0.05) // step) + 1)
+
     all_words = []
     pos = 0.0
     chunk_idx = 0
     while pos < total_sec - 0.05:
+        if progress_cb:
+            try:
+                progress_cb(chunk_idx, total_chunks)
+            except Exception:
+                pass
         end = min(pos + chunk_sec, total_sec)
         s_idx = int(pos * sr)
         e_idx = int(end * sr)
@@ -295,7 +308,14 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base', bro
         bpm, beat_times = estimate_bpm_and_beats(song_wav)
 
         upd(message=f'Transcribing song ({bpm:.0f} BPM, tiny model)...', percent=14)
-        song_words = cached_transcribe(song_model, song_wav, song_model_name, chunked=True)
+
+        def _song_progress(i, total):
+            pct = 14 + int(24 * i / max(1, total))
+            upd(message=f'Transcribing song chunk {i + 1}/{total}...', percent=pct)
+
+        song_words = cached_transcribe(
+            song_model, song_wav, song_model_name, chunked=True, progress_cb=_song_progress
+        )
 
         upd(message='Transcribing original video...', percent=40)
         orig_words = cached_transcribe(source_model, orig_wav, source_model_name, chunked=False, source=True)
