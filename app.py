@@ -506,28 +506,28 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
                 gap_start = song_pos
                 gap_end = song_pos + dur
 
-                if broll_clips:
-                    # Cut on the beat: split the gap at every beat boundary
-                    # inside it. Each sub-segment becomes one random B-roll
-                    # snippet, so cuts always land on the BPM.
-                    splits = [gap_start]
-                    for b in beat_times:
-                        if gap_start + 0.08 < b < gap_end - 0.08:
-                            splits.append(b)
-                    splits.append(gap_end)
-                    # Merge tiny segments (< half a beat) with neighbours
-                    min_seg = max(0.12, beat_period * 0.5)
-                    cleaned = [splits[0]]
-                    for s in splits[1:]:
-                        if s - cleaned[-1] >= min_seg:
-                            cleaned.append(s)
-                    if len(cleaned) < 2 or cleaned[-1] < gap_end:
-                        cleaned[-1] = gap_end
+                # Cut on the beat: split the gap at every beat boundary so
+                # whatever fills it (B-roll or source-as-broll) lands on the BPM.
+                splits = [gap_start]
+                for b in beat_times:
+                    if gap_start + 0.08 < b < gap_end - 0.08:
+                        splits.append(b)
+                splits.append(gap_end)
+                min_seg = max(0.12, beat_period * 0.5)
+                cleaned = [splits[0]]
+                for s in splits[1:]:
+                    if s - cleaned[-1] >= min_seg:
+                        cleaned.append(s)
+                if len(cleaned) < 2 or cleaned[-1] < gap_end:
+                    cleaned[-1] = gap_end
 
-                    for i in range(len(cleaned) - 1):
-                        seg_dur = cleaned[i + 1] - cleaned[i]
-                        if seg_dur < 0.05:
-                            continue
+                for i in range(len(cleaned) - 1):
+                    seg_dur = cleaned[i + 1] - cleaned[i]
+                    if seg_dur < 0.05:
+                        continue
+
+                    if broll_clips:
+                        # Random snippet from uploaded B-roll pool
                         broll = random.choice(broll_clips)
                         max_start = max(0.0, broll.duration - seg_dur - 0.05)
                         start = random.uniform(0.0, max_start) if max_start > 0.1 else 0.0
@@ -535,10 +535,18 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
                         bc = bc.resized(new_size=(target_w, target_h))
                         bc = bc.without_audio().with_duration(seg_dur).with_fps(fps)
                         clips.append(bc)
-                elif gap_mode == 'freeze':
-                    clips.append(ImageClip(last_frame.copy()).with_duration(dur).with_fps(fps))
-                else:
-                    clips.append(ImageClip(black_frame).with_duration(dur).with_fps(fps))
+                    elif gap_mode == 'source':
+                        # Random snippet from the source video itself —
+                        # always something to look at, audio stripped, on beat.
+                        max_start = max(0.0, video_duration - seg_dur - 0.1)
+                        start = random.uniform(0.0, max_start) if max_start > 0.1 else 0.0
+                        sc = video_clip.subclipped(start, start + seg_dur).without_audio()
+                        sc = sc.with_duration(seg_dur)
+                        clips.append(sc)
+                    elif gap_mode == 'freeze':
+                        clips.append(ImageClip(last_frame.copy()).with_duration(seg_dur).with_fps(fps))
+                    else:
+                        clips.append(ImageClip(black_frame).with_duration(seg_dur).with_fps(fps))
 
                 song_pos += dur
 

@@ -696,8 +696,9 @@
       <div>
         <label class="param-lbl">Gap Mode Protocol</label>
         <div class="toggle-row">
+          <button class="tbtn active" data-mode="source" onclick="setGap(this)">Source B-Roll</button>
           <button class="tbtn" data-mode="freeze" onclick="setGap(this)">Freeze Frame</button>
-          <button class="tbtn active" data-mode="black" onclick="setGap(this)">Black Screen</button>
+          <button class="tbtn" data-mode="black" onclick="setGap(this)">Black</button>
         </div>
       </div>
 
@@ -888,7 +889,7 @@
   });
 
   // ─── State ───────────────────────────────────────────────────────
-  let gapMode = 'black';
+  let gapMode = 'source';
   let songFile = null;
   let videoFile = null;
   let brollFiles = [];                  // kept empty; B-roll UI removed
