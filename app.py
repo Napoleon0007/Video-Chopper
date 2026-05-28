@@ -32,22 +32,22 @@ def upd(**kwargs):
 
 
 def load_audio_ffmpeg(src_path, sr=8000):
+    """Decode any audio/video source to a float32 mono array at target SR."""
     tmp = tempfile.mktemp(suffix='.wav')
     subprocess.run(
         [FFMPEG, '-y', '-i', src_path, '-ar', str(sr), '-ac', '1', '-f', 'wav', tmp],
         capture_output=True, check=True
     )
-    data, file_sr = sf.read(tmp, dtype='float32', always_2d=False)
+    data, _ = sf.read(tmp, dtype='float32', always_2d=False)
     os.unlink(tmp)
-    return data, file_sr
+    return data
 
 
-def speech_filter(data, sr):
-    """Bandpass 300–3400 Hz to isolate voice; cuts music and background noise."""
-    lo = 300 / (sr / 2)
-    hi = 3400 / (sr / 2)
-    b, a = butter(4, [lo, hi], btype='band')
-    return filtfilt(b, a, data).astype(np.float32)
+def bandpass_voice(audio, sr):
+    """300–3400 Hz bandpass — strips beats/music so correlation locks onto voice only."""
+    nyq = sr / 2.0
+    b, a = butter(4, [300 / nyq, min(3400 / nyq, 0.99)], btype='band')
+    return filtfilt(b, a, audio).astype(np.float32)
 
 
 SPEED_RATES = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
@@ -77,30 +77,26 @@ def detect_speed(query, orig_n, rough_orig_idx, window_samples, SR):
 def process(song_path, video_path, gap_mode, sensitivity):
     try:
         SR = 8000
-        # Smaller windows = word-level precision; hop = output clip duration
-        WINDOW_SEC = 0.8
-        HOP_SEC = 0.5
+        WINDOW_SEC = 0.5          # each window = exactly one output clip
         window_samples = int(WINDOW_SEC * SR)
-        hop_samples = int(HOP_SEC * SR)
-        SILENCE_RMS = 0.015  # windows below this energy are treated as silence
+        SILENCE_THRESH = 0.015    # raw RMS below this = silence/beat, no match attempt
 
         upd(status='processing', message='Loading song audio...', percent=5)
-        song_raw, _ = load_audio_ffmpeg(song_path, SR)
+        song = load_audio_ffmpeg(song_path, SR)
 
         upd(message='Extracting original video audio...', percent=12)
-        orig_raw, _ = load_audio_ffmpeg(video_path, SR)
+        orig = load_audio_ffmpeg(video_path, SR)
 
-        upd(message='Filtering to speech frequencies...', percent=20)
-        # Bandpass to voice range so correlation ignores music/background
-        song_f = speech_filter(song_raw, SR)
-        orig_f = speech_filter(orig_raw, SR)
+        upd(message='Filtering to speech band (300–3400 Hz)...', percent=18)
+        song_filt = bandpass_voice(song, SR)
+        orig_filt = bandpass_voice(orig, SR)
 
-        song_rms = np.sqrt(np.mean(song_f ** 2)) + 1e-8
-        orig_rms = np.sqrt(np.mean(orig_f ** 2)) + 1e-8
-        song_n = (song_f / song_rms).astype(np.float32)
-        orig_n = (orig_f / orig_rms).astype(np.float32)
+        upd(message='Building fingerprint...', percent=22)
 
-        upd(message='Building audio fingerprint...', percent=26)
+        song_rms = np.sqrt(np.mean(song_filt ** 2)) + 1e-8
+        orig_rms = np.sqrt(np.mean(orig_filt ** 2)) + 1e-8
+        song_n = (song_filt / song_rms).astype(np.float32)
+        orig_n = (orig_filt / orig_rms).astype(np.float32)
 
         n_fft = 1
         while n_fft < len(orig_n) + window_samples:
@@ -110,130 +106,113 @@ def process(song_path, video_path, gap_mode, sensitivity):
         orig_padded[:len(orig_n)] = orig_n
         orig_fft = np.fft.rfft(orig_padded)
 
-        upd(message='Scanning every window of the song...', percent=30)
+        upd(message='Matching clips to original...', percent=32)
 
-        n_windows = max(1, (len(song_n) - window_samples) // hop_samples)
+        # Non-overlapping windows: each window becomes exactly one output clip
+        n_windows = len(song_n) // window_samples
         matches = []
 
         for i in range(n_windows):
-            s = i * hop_samples
+            s = i * window_samples
             e = s + window_samples
-            if e > len(song_n):
-                break
-
             query = song_n[s:e]
 
-            # Skip silence — no voice to match
-            query_rms = float(np.sqrt(np.mean(query ** 2)))
-            if query_rms < SILENCE_RMS:
+            # Silence check on raw (unfiltered) audio
+            raw_rms = float(np.sqrt(np.mean(song[s:e] ** 2)))
+
+            if raw_rms < SILENCE_THRESH:
+                matches.append({'song_time': s / SR, 'silent': True, 'score': 0.0, 'query': query})
+            else:
+                q_padded = np.zeros(n_fft, dtype=np.float32)
+                q_padded[:len(query)] = query[::-1]
+                q_fft = np.fft.rfft(q_padded)
+
+                corr = np.fft.irfft(orig_fft * q_fft)[:len(orig_n)]
+                best_idx = int(np.argmax(corr))
+                score = float(corr[best_idx]) / window_samples
+                orig_start_sample = max(0, best_idx - window_samples + 1)
+
                 matches.append({
                     'song_time': s / SR,
-                    'orig_time': 0.0,
-                    'orig_idx': 0,
-                    'score': 0.0,
+                    'orig_time': orig_start_sample / SR,
+                    'orig_idx': orig_start_sample,
+                    'score': score,
                     'query': query,
-                    'silent': True,
+                    'silent': False,
                 })
-                continue
 
-            q_padded = np.zeros(n_fft, dtype=np.float32)
-            q_padded[:len(query)] = query[::-1]
-            q_fft = np.fft.rfft(q_padded)
+            if i % 20 == 0:
+                pct = 32 + int(40 * i / n_windows)
+                upd(message=f'Matching... {i + 1}/{n_windows} clips', percent=pct)
 
-            corr = np.fft.irfft(orig_fft * q_fft)[:len(orig_n)]
-            best_idx = int(np.argmax(corr))
-            score = float(corr[best_idx]) / window_samples
-            # corr[k] = dot(query, orig[k-ws+1:k+1]), so orig_start = k-ws+1
-            orig_start_sample = max(0, best_idx - window_samples + 1)
+        upd(message='Setting threshold...', percent=74)
 
-            matches.append({
-                'song_time': s / SR,
-                'orig_time': orig_start_sample / SR,
-                'orig_idx': orig_start_sample,
-                'score': score,
-                'query': query,
-                'silent': False,
-            })
+        voice_scores = [m['score'] for m in matches if not m['silent']]
+        if voice_scores:
+            score_arr = np.array(voice_scores)
+            score_median = float(np.median(score_arr))
+            score_max = float(score_arr.max())
+            threshold = score_median + sensitivity * (score_max - score_median)
+        else:
+            threshold = 0.0
 
-            if i % 10 == 0:
-                pct = 30 + int(44 * i / n_windows)
-                upd(message=f'Scanning... {i + 1}/{n_windows} windows', percent=pct)
-
-        upd(message='Calibrating match threshold...', percent=76)
-
-        voiced = [m['score'] for m in matches if not m.get('silent')]
-        score_arr = np.array(voiced) if voiced else np.array([0.0])
-        # Use median as noise floor — more matches get through vs 75th percentile
-        noise_floor = float(np.percentile(score_arr, 50))
-        score_max = float(score_arr.max())
-        threshold = noise_floor + sensitivity * (score_max - noise_floor)
-
-        upd(message='Detecting playback speeds...', percent=79)
+        upd(message='Detecting clip speeds...', percent=76)
         for m in matches:
-            if not m.get('silent') and m['score'] >= threshold:
+            if not m['silent'] and m['score'] >= threshold:
                 m['speed'] = detect_speed(m['query'], orig_n, m['orig_idx'], window_samples, SR)
             else:
                 m['speed'] = 1.0
 
-        matched_count = sum(1 for m in matches if not m.get('silent') and m['score'] >= threshold)
-        upd(
-            message=f'Building {matched_count} individual clips (no segment grouping)...',
-            percent=83,
-            segments=matched_count,
-        )
+        upd(message='Building clip sequence...', percent=80)
 
         video_clip = VideoFileClip(video_path)
         fps = video_clip.fps
         video_duration = video_clip.duration
-        song_dur = len(song_raw) / SR
 
         clips = []
+        matched_count = 0
+        black_frame = np.zeros((int(video_clip.h), int(video_clip.w), 3), dtype=np.uint8)
         last_frame = video_clip.get_frame(0)
 
-        # Every window → its own clip. No grouping. Reordered audio works naturally.
         for m in matches:
-            clip_dur = HOP_SEC
+            is_match = not m['silent'] and m['score'] >= threshold
 
-            is_match = not m.get('silent') and m['score'] >= threshold
-            if is_match:
+            if not is_match:
+                if gap_mode == 'freeze':
+                    clips.append(ImageClip(last_frame.copy()).with_duration(WINDOW_SEC).with_fps(fps))
+                else:
+                    clips.append(ImageClip(black_frame).with_duration(WINDOW_SEC).with_fps(fps))
+            else:
                 speed = m.get('speed', 1.0)
-                raw_dur = clip_dur * speed
+                raw_dur = WINDOW_SEC * speed
                 o_start = max(0.0, min(m['orig_time'], video_duration - 0.1))
                 o_end = max(o_start + 0.05, min(o_start + raw_dur, video_duration))
 
                 vc = video_clip.subclipped(o_start, o_end)
                 if abs(speed - 1.0) > 0.03:
                     vc = vc.with_speed_scaled(speed)
-                vc = vc.with_duration(clip_dur)
+                vc = vc.with_duration(WINDOW_SEC)
                 clips.append(vc)
-                last_frame = video_clip.get_frame(min(o_end, video_duration - 0.05))
-            else:
-                if gap_mode == 'freeze':
-                    clips.append(ImageClip(last_frame).with_duration(clip_dur).with_fps(fps))
-                else:
-                    clips.append(ImageClip(np.zeros_like(last_frame)).with_duration(clip_dur).with_fps(fps))
 
-        # Tail — cover any remaining song duration
-        assembled_dur = len(clips) * HOP_SEC
-        if assembled_dur < song_dur - 0.05:
-            remaining = song_dur - assembled_dur
-            if gap_mode == 'freeze':
-                clips.append(ImageClip(last_frame).with_duration(remaining).with_fps(fps))
-            else:
-                clips.append(ImageClip(np.zeros_like(last_frame)).with_duration(remaining).with_fps(fps))
+                last_frame = video_clip.get_frame(min(o_end, video_duration - 0.05))
+                matched_count += 1
 
         if not clips:
-            upd(status='error', message='No voice segments matched. Try lowering the sensitivity slider.')
+            upd(status='error', message='No clips assembled. Try lowering sensitivity.')
             video_clip.close()
             return
 
-        upd(message=f'Rendering ({matched_count} synced clips)...', percent=88, segments=matched_count)
+        upd(
+            message=f'Rendering {len(clips)} clips ({matched_count} matched)...',
+            percent=90,
+            segments=matched_count,
+        )
 
         final = concatenate_videoclips(clips, method='compose')
         audio_clip = AudioFileClip(song_path)
+        song_dur = len(song) / SR
         safe_end = min(song_dur, final.duration, audio_clip.duration) - 0.001
-        song_audio = audio_clip.subclipped(0, max(0, safe_end))
-        final = final.with_audio(song_audio)
+        final = final.with_audio(audio_clip.subclipped(0, max(0, safe_end)))
 
         output_path = os.path.join(OUTPUT_DIR, 'music_video.mp4')
         final.write_videofile(output_path, fps=fps, codec='libx264', audio_codec='aac', logger=None)
@@ -241,7 +220,7 @@ def process(song_path, video_path, gap_mode, sensitivity):
         video_clip.close()
         final.close()
 
-        upd(status='done', message=f'Done! {matched_count} clips synced.', percent=100, output=output_path)
+        upd(status='done', message=f'Done! {matched_count} voice clips cut and synced.', percent=100, output=output_path)
 
     except Exception as e:
         import traceback
@@ -261,7 +240,7 @@ def start_process():
 
     song_file = request.files.get('song')
     video_file = request.files.get('video')
-    gap_mode = request.form.get('gap_mode', 'freeze')
+    gap_mode = request.form.get('gap_mode', 'black')
     sensitivity = float(request.form.get('sensitivity', '0.25'))
 
     if not song_file or not video_file:

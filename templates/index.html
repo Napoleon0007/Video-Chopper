@@ -3,413 +3,830 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Video Chopper</title>
+  <title>VID//CHOPPER</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --c:   #00e5ff;
+      --p:   #ff0099;
+      --g:   #00ff88;
+      --o:   #ff7700;
+      --bg:  #03030c;
+      --pb:  rgba(0,229,255,0.04);
+      --b:   rgba(0,229,255,0.18);
+      --bb:  rgba(0,229,255,0.55);
+      --td:  rgba(0,229,255,0.28);
+      --gs:  0 0 8px rgba(0,229,255,0.7);
+      --gm:  0 0 18px rgba(0,229,255,0.4), 0 0 40px rgba(0,229,255,0.15);
+      --gl:  0 0 28px rgba(0,229,255,0.6), 0 0 60px rgba(0,229,255,0.25), 0 0 100px rgba(0,229,255,0.08);
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      background: #0d0d0d;
-      color: #e8e8e8;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      background-image:
+        radial-gradient(ellipse 70% 50% at 15% 60%, rgba(0,80,180,0.06) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 40% at 85% 20%, rgba(255,0,120,0.04) 0%, transparent 60%);
+      color: rgba(0,229,255,0.75);
+      font-family: 'Share Tech Mono', monospace;
       min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 48px 24px;
+      padding: 20px 20px 32px;
+      overflow-x: hidden;
     }
 
-    header {
-      text-align: center;
-      margin-bottom: 48px;
-    }
-
-    header h1 {
-      font-size: 2rem;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      color: #fff;
-    }
-
-    header p {
-      margin-top: 8px;
-      color: #666;
-      font-size: 0.9rem;
-    }
-
-    .card {
-      background: #161616;
-      border: 1px solid #222;
-      border-radius: 16px;
-      padding: 32px;
-      width: 100%;
-      max-width: 680px;
-    }
-
-    .drop-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      margin-bottom: 24px;
-    }
-
-    .drop-zone {
-      border: 2px dashed #2a2a2a;
-      border-radius: 12px;
-      padding: 28px 16px;
-      text-align: center;
-      cursor: pointer;
-      transition: border-color 0.2s, background 0.2s;
-      position: relative;
-    }
-
-    .drop-zone:hover, .drop-zone.drag-over {
-      border-color: #4a9eff;
-      background: rgba(74, 158, 255, 0.05);
-    }
-
-    .drop-zone.has-file {
-      border-color: #34c97a;
-      border-style: solid;
-    }
-
-    .drop-zone input[type="file"] {
-      position: absolute;
+    /* grid bg */
+    body::after {
+      content: '';
+      position: fixed;
       inset: 0;
-      opacity: 0;
-      cursor: pointer;
-      width: 100%;
-      height: 100%;
+      background-image:
+        linear-gradient(rgba(0,229,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,229,255,0.025) 1px, transparent 1px);
+      background-size: 44px 44px;
+      pointer-events: none;
+      z-index: 0;
     }
 
-    .drop-icon {
-      font-size: 2rem;
-      margin-bottom: 10px;
+    /* scanlines */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg, transparent, transparent 3px,
+        rgba(0,0,0,0.07) 3px, rgba(0,0,0,0.07) 4px
+      );
+      pointer-events: none;
+      z-index: 1000;
     }
 
-    .drop-label {
-      font-size: 0.8rem;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #999;
-      margin-bottom: 6px;
+    /* sweep line */
+    .sweep {
+      position: fixed;
+      top: -3px; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent 0%, var(--c) 40%, rgba(0,229,255,0.3) 60%, transparent 100%);
+      box-shadow: 0 0 14px var(--c), 0 0 30px rgba(0,229,255,0.4);
+      animation: sweep 6s linear infinite;
+      pointer-events: none;
+      z-index: 999;
+    }
+    @keyframes sweep { from { top:-3px } to { top:100vh } }
+
+    .wrapper {
+      max-width: 1080px;
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
     }
 
-    .drop-hint {
-      font-size: 0.75rem;
-      color: #444;
-    }
-
-    .drop-filename {
-      font-size: 0.78rem;
-      color: #34c97a;
-      margin-top: 6px;
-      word-break: break-all;
-    }
-
-    .options-row {
+    /* ─── HEADER ─────────────────────────────────────── */
+    .sys-header {
       display: flex;
-      gap: 24px;
-      align-items: flex-end;
-      margin-bottom: 24px;
-    }
-
-    .option-group {
-      flex: 1;
-    }
-
-    .option-group label {
-      display: block;
-      font-size: 0.75rem;
-      font-weight: 600;
-      letter-spacing: 0.07em;
-      text-transform: uppercase;
-      color: #666;
-      margin-bottom: 10px;
-    }
-
-    .toggle-buttons {
-      display: flex;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 14px 22px;
+      border: 1px solid var(--b);
+      background: var(--pb);
+      margin-bottom: 14px;
+      position: relative;
       overflow: hidden;
     }
-
-    .toggle-btn {
-      flex: 1;
-      padding: 9px 12px;
-      background: transparent;
-      border: none;
-      color: #666;
-      font-size: 0.82rem;
-      cursor: pointer;
-      transition: background 0.15s, color 0.15s;
+    .sys-header::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, rgba(0,229,255,0.04) 0%, transparent 35%, transparent 65%, rgba(255,0,153,0.04) 100%);
+    }
+    /* corner cuts */
+    .sys-header::after {
+      content: '';
+      position: absolute;
+      top: 0; right: 0;
+      width: 0; height: 0;
+      border-style: solid;
+      border-width: 0 22px 22px 0;
+      border-color: transparent var(--bg) transparent transparent;
     }
 
-    .toggle-btn.active {
-      background: #222;
-      color: #fff;
+    .logo {
+      font-family: 'Orbitron', monospace;
+      font-weight: 900;
+      font-size: 1.45rem;
+      letter-spacing: 0.12em;
+      color: var(--c);
+      text-shadow: var(--gs);
+    }
+    .logo em { color: var(--p); font-style: normal; text-shadow: 0 0 10px rgba(255,0,153,0.8); }
+
+    .header-indicators {
+      display: flex;
+      gap: 20px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .ind {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.6rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--td);
+    }
+    .led {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+    }
+    .led-c { background: var(--c); box-shadow: 0 0 6px var(--c), 0 0 12px rgba(0,229,255,0.5); animation: blink 2.2s infinite; }
+    .led-g { background: var(--g); box-shadow: 0 0 6px var(--g); animation: blink 1.6s 0.4s infinite; }
+    .led-p { background: var(--p); box-shadow: 0 0 6px var(--p); }
+    .led-o { background: var(--o); box-shadow: 0 0 6px var(--o); animation: blink 0.9s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
+
+    .header-ver {
+      font-size: 0.58rem;
+      letter-spacing: 0.1em;
+      color: rgba(0,229,255,0.2);
     }
 
-    .slider-wrap {
+    /* ─── PANELS ─────────────────────────────────────── */
+    .panel {
+      border: 1px solid var(--b);
+      background: var(--pb);
+      padding: 20px;
       position: relative;
     }
+    /* top-left bracket */
+    .panel::before {
+      content: '';
+      position: absolute;
+      top: -1px; left: -1px;
+      width: 14px; height: 14px;
+      border-top: 2px solid var(--c);
+      border-left: 2px solid var(--c);
+      box-shadow: -1px -1px 8px rgba(0,229,255,0.5);
+    }
+    /* bottom-right bracket */
+    .panel::after {
+      content: '';
+      position: absolute;
+      bottom: -1px; right: -1px;
+      width: 14px; height: 14px;
+      border-bottom: 2px solid var(--c);
+      border-right: 2px solid var(--c);
+      box-shadow: 1px 1px 8px rgba(0,229,255,0.5);
+    }
 
-    .slider-labels {
+    .panel-title {
+      font-size: 0.58rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--c);
+      text-shadow: var(--gs);
+      margin-bottom: 18px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--b);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .panel-title .slash { color: var(--td); }
+
+    /* ─── MAIN GRID ──────────────────────────────────── */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    /* ─── DROP ZONES ─────────────────────────────────── */
+    .drop-stack { display: flex; flex-direction: column; gap: 12px; }
+
+    .drop-zone {
+      border: 1px solid var(--b);
+      background: rgba(0,0,10,0.4);
+      padding: 18px 14px;
+      text-align: center;
+      cursor: pointer;
+      position: relative;
+      transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+    }
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0;
+      opacity: 0; cursor: pointer;
+      width: 100%; height: 100%;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--c);
+      background: rgba(0,229,255,0.05);
+      box-shadow: var(--gs), inset 0 0 24px rgba(0,229,255,0.04);
+    }
+    .drop-zone.has-file {
+      border-color: var(--g);
+      background: rgba(0,255,136,0.03);
+      box-shadow: 0 0 12px rgba(0,255,136,0.25), inset 0 0 20px rgba(0,255,136,0.04);
+    }
+
+    .dz-type {
+      font-size: 0.57rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--c);
+      text-shadow: var(--gs);
+      margin-bottom: 10px;
+    }
+    .dz-ring {
+      width: 44px; height: 44px;
+      border: 1px solid var(--bb);
+      border-radius: 50%;
+      margin: 0 auto 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.15rem;
+      box-shadow: var(--gs);
+      transition: all 0.18s;
+      background: rgba(0,229,255,0.04);
+    }
+    .drop-zone:hover .dz-ring {
+      box-shadow: var(--gm);
+      border-color: var(--c);
+    }
+    .drop-zone.has-file .dz-ring {
+      border-color: var(--g);
+      box-shadow: 0 0 12px rgba(0,255,136,0.5);
+    }
+    .dz-hint {
+      font-size: 0.62rem;
+      color: rgba(0,229,255,0.22);
+      letter-spacing: 0.06em;
+    }
+    .dz-hint.has { color: var(--g); text-shadow: 0 0 8px rgba(0,255,136,0.5); margin-top: 4px; word-break: break-all; font-size: 0.65rem; }
+
+    /* ─── DIAGNOSTIC PANEL ───────────────────────────── */
+    .diag-inner { display: flex; flex-direction: column; gap: 12px; }
+
+    .spectrum-box {
+      border: 1px solid var(--b);
+      padding: 12px 12px 8px;
+      background: rgba(0,0,0,0.3);
+    }
+    .spec-label {
+      font-size: 0.52rem;
+      letter-spacing: 0.18em;
+      color: var(--td);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .spec-bars {
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      height: 52px;
+    }
+    .sb {
+      flex: 1;
+      background: var(--c);
+      box-shadow: 0 0 5px var(--c);
+      border-radius: 1px 1px 0 0;
+      min-height: 2px;
+      animation: sb var(--d) var(--dl) infinite alternate ease-in-out;
+    }
+    @keyframes sb { from { height: var(--lo); opacity: 0.45; } to { height: var(--hi); opacity: 1; } }
+
+    .metrics-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+    .met {
+      border: 1px solid var(--b);
+      padding: 8px 10px;
+      background: rgba(0,0,0,0.35);
+    }
+    .met-lbl {
+      font-size: 0.52rem;
+      letter-spacing: 0.14em;
+      color: var(--td);
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    .met-bar-bg { height: 2px; background: rgba(0,229,255,0.1); margin-bottom: 4px; }
+    .met-bar { height: 100%; background: var(--c); box-shadow: 0 0 4px var(--c); }
+    .met-val { font-size: 0.68rem; color: var(--c); text-shadow: var(--gs); }
+    .met-val.g { color: var(--g); text-shadow: 0 0 6px rgba(0,255,136,0.5); }
+
+    .algo-box {
+      border: 1px solid var(--b);
+      padding: 10px 14px;
+      background: rgba(0,0,0,0.35);
+      font-size: 0.6rem;
+      line-height: 2;
+      color: var(--td);
+    }
+    .algo-box .hl  { color: var(--c); text-shadow: var(--gs); }
+    .algo-box .hl2 { color: var(--p); text-shadow: 0 0 6px rgba(255,0,153,0.5); }
+    .algo-box .hlg { color: var(--g); text-shadow: 0 0 6px rgba(0,255,136,0.4); }
+
+    /* ─── PARAMETERS ─────────────────────────────────── */
+    .params-panel { margin-bottom: 14px; }
+    .params-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 28px;
+      align-items: end;
+    }
+    .param-lbl {
+      font-size: 0.57rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--td);
+      display: block;
+      margin-bottom: 11px;
+    }
+    .param-val { color: var(--c); text-shadow: var(--gs); margin-left: 8px; }
+
+    .toggle-row {
+      display: flex;
+      border: 1px solid var(--b);
+    }
+    .tbtn {
+      flex: 1;
+      padding: 9px 10px;
+      background: transparent;
+      border: none;
+      border-right: 1px solid var(--b);
+      color: var(--td);
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tbtn:last-child { border-right: none; }
+    .tbtn.active {
+      background: rgba(0,229,255,0.08);
+      color: var(--c);
+      text-shadow: var(--gs);
+      box-shadow: inset 0 0 14px rgba(0,229,255,0.08);
+    }
+    .tbtn:hover:not(.active) { color: rgba(0,229,255,0.55); background: rgba(0,229,255,0.03); }
+
+    .slider-ends {
       display: flex;
       justify-content: space-between;
-      font-size: 0.7rem;
-      color: #444;
-      margin-bottom: 6px;
+      font-size: 0.53rem;
+      letter-spacing: 0.1em;
+      color: rgba(0,229,255,0.2);
+      margin-bottom: 8px;
     }
-
-    input[type="range"] {
+    input[type=range] {
+      -webkit-appearance: none;
       width: 100%;
-      accent-color: #4a9eff;
+      height: 3px;
+      background: rgba(0,229,255,0.12);
+      outline: none;
       cursor: pointer;
+      border-radius: 0;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 15px; height: 15px;
+      border-radius: 50%;
+      background: var(--c);
+      box-shadow: 0 0 10px var(--c), 0 0 20px rgba(0,229,255,0.4);
+      cursor: pointer;
+      transition: box-shadow 0.15s;
+    }
+    input[type=range]:hover::-webkit-slider-thumb {
+      box-shadow: 0 0 14px var(--c), 0 0 30px rgba(0,229,255,0.5);
     }
 
-    .process-btn {
+    /* ─── PROCESS BUTTON ─────────────────────────────── */
+    .proc-wrap { margin-bottom: 14px; position: relative; }
+
+    /* animated border glow strip */
+    .proc-wrap::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      background: linear-gradient(90deg, var(--c), var(--p), var(--c), var(--p), var(--c));
+      background-size: 300% 100%;
+      animation: borderMove 3s linear infinite;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }
+    .proc-wrap:hover::before { opacity: 0.7; }
+    @keyframes borderMove { from { background-position: 0% 50% } to { background-position: 300% 50% } }
+
+    .proc-btn {
       width: 100%;
-      padding: 16px;
-      background: #4a9eff;
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      font-size: 1rem;
+      padding: 20px;
+      background: rgba(0,229,255,0.04);
+      border: 1px solid var(--c);
+      color: var(--c);
+      font-family: 'Orbitron', monospace;
+      font-size: 0.88rem;
       font-weight: 700;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
       cursor: pointer;
-      transition: background 0.2s, opacity 0.2s;
-      margin-bottom: 24px;
+      position: relative;
+      text-shadow: var(--gs);
+      box-shadow: var(--gm), inset 0 0 24px rgba(0,229,255,0.04);
+      transition: all 0.2s;
+      overflow: hidden;
     }
-
-    .process-btn:hover:not(:disabled) {
-      background: #3a8ef0;
+    /* shimmer sweep on hover */
+    .proc-btn::before {
+      content: '';
+      position: absolute;
+      top: 0; left: -100%; bottom: 0;
+      width: 60%;
+      background: linear-gradient(90deg, transparent, rgba(0,229,255,0.12), transparent);
+      transition: left 0.4s;
     }
-
-    .process-btn:disabled {
-      opacity: 0.4;
+    .proc-btn:hover:not(:disabled)::before { left: 160%; }
+    .proc-btn:hover:not(:disabled) {
+      background: rgba(0,229,255,0.08);
+      box-shadow: var(--gl), inset 0 0 30px rgba(0,229,255,0.07);
+    }
+    .proc-btn:disabled {
+      border-color: rgba(0,229,255,0.12);
+      color: rgba(0,229,255,0.18);
+      text-shadow: none;
+      box-shadow: none;
       cursor: not-allowed;
     }
 
-    .progress-section {
-      display: none;
+    /* side decorations on button */
+    .proc-btn::after {
+      content: '▶▶▶';
+      position: absolute;
+      right: 22px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.55rem;
+      letter-spacing: 0.2em;
+      color: rgba(0,229,255,0.3);
     }
 
-    .progress-section.visible {
-      display: block;
-    }
+    /* ─── OUTPUT PANEL ───────────────────────────────── */
+    .out-panel { display: none; margin-bottom: 14px; }
+    .out-panel.on { display: block; }
 
-    .progress-bar-bg {
-      background: #1e1e1e;
-      border-radius: 99px;
-      height: 6px;
+    .prog-track {
+      height: 8px;
+      background: rgba(0,229,255,0.06);
+      border: 1px solid var(--b);
+      margin-bottom: 14px;
+      position: relative;
       overflow: hidden;
-      margin-bottom: 10px;
     }
+    /* subtle moving shimmer on track bg */
+    .prog-track::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent 0%, rgba(0,229,255,0.06) 50%, transparent 100%);
+      background-size: 200% 100%;
+      animation: trackShim 2s linear infinite;
+    }
+    @keyframes trackShim { from{background-position:200% 0} to{background-position:-200% 0} }
 
-    .progress-bar-fill {
-      height: 100%;
-      background: #4a9eff;
-      border-radius: 99px;
-      transition: width 0.4s ease;
+    .prog-fill {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, rgba(0,229,255,0.7) 0%, var(--c) 100%);
+      box-shadow: 0 0 10px var(--c), 0 0 20px rgba(0,229,255,0.3);
       width: 0%;
+      transition: width 0.4s ease;
     }
-
-    .progress-bar-fill.done {
-      background: #34c97a;
+    /* leading edge glow */
+    .prog-fill::after {
+      content: '';
+      position: absolute;
+      right: -2px; top: -3px; bottom: -3px;
+      width: 16px;
+      background: var(--c);
+      box-shadow: 0 0 12px var(--c), 0 0 24px var(--c);
     }
-
-    .progress-bar-fill.error {
-      background: #e05454;
+    .prog-fill.done {
+      background: linear-gradient(90deg, rgba(0,255,136,0.7) 0%, var(--g) 100%);
+      box-shadow: 0 0 10px var(--g), 0 0 20px rgba(0,255,136,0.3);
     }
-
-    .status-msg {
-      font-size: 0.82rem;
-      color: #888;
-      min-height: 18px;
+    .prog-fill.done::after { background: var(--g); box-shadow: 0 0 12px var(--g); }
+    .prog-fill.error {
+      background: linear-gradient(90deg, rgba(255,40,40,0.7), #ff4444);
+      box-shadow: 0 0 10px #ff4444;
     }
+    .prog-fill.error::after { display: none; }
 
-    .status-msg.error {
-      color: #e05454;
+    .out-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+      min-height: 20px;
+    }
+    .out-msg {
+      font-size: 0.7rem;
+      color: var(--td);
+      flex: 1;
+    }
+    .out-msg.error {
+      color: #ff5555;
       white-space: pre-wrap;
-      font-family: monospace;
-      font-size: 0.75rem;
-      background: #1a1010;
-      border-radius: 8px;
-      padding: 12px;
-      max-height: 200px;
+      font-size: 0.62rem;
+      background: rgba(255,40,40,0.05);
+      border: 1px solid rgba(255,40,40,0.2);
+      padding: 10px;
+      max-height: 140px;
       overflow-y: auto;
     }
+    .clips-badge {
+      display: none;
+      background: rgba(0,229,255,0.08);
+      border: 1px solid var(--bb);
+      color: var(--c);
+      text-shadow: var(--gs);
+      box-shadow: var(--gs);
+      padding: 3px 12px;
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      white-space: nowrap;
+    }
 
-    .download-btn {
+    .dl-btn {
       display: none;
       width: 100%;
-      padding: 14px;
-      background: #34c97a;
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      font-size: 0.95rem;
+      padding: 15px;
+      background: rgba(0,255,136,0.06);
+      border: 1px solid var(--g);
+      color: var(--g);
+      font-family: 'Orbitron', monospace;
+      font-size: 0.78rem;
       font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
       cursor: pointer;
       text-align: center;
       text-decoration: none;
-      margin-top: 16px;
-      transition: background 0.2s;
+      text-shadow: 0 0 10px rgba(0,255,136,0.6);
+      box-shadow: 0 0 20px rgba(0,255,136,0.15), inset 0 0 20px rgba(0,255,136,0.04);
+      transition: all 0.2s;
     }
+    .dl-btn:hover { background: rgba(0,255,136,0.12); box-shadow: 0 0 30px rgba(0,255,136,0.3); }
+    .dl-btn.on { display: block; }
 
-    .download-btn:hover { background: #28b56a; }
-    .download-btn.visible { display: block; }
-
-    .segments-badge {
-      display: inline-block;
-      background: #1e2a1e;
-      color: #34c97a;
-      border-radius: 6px;
-      padding: 3px 10px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      margin-left: 10px;
-      vertical-align: middle;
+    /* ─── FOOTER ─────────────────────────────────────── */
+    footer {
+      margin-top: 16px;
+      padding: 10px 18px;
+      border-top: 1px solid var(--b);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.54rem;
+      letter-spacing: 0.1em;
+      color: rgba(0,229,255,0.16);
+      flex-wrap: wrap;
+      gap: 8px;
     }
   </style>
 </head>
 <body>
 
-<header>
-  <h1>Video Chopper</h1>
-  <p>Auto-sync mouth clips from original footage to your song</p>
-</header>
+<div class="sweep"></div>
 
-<div class="card">
+<div class="wrapper">
 
-  <div class="drop-row">
-    <div class="drop-zone" id="songZone">
-      <input type="file" id="songFile" accept=".wav,.mp3,.aiff,.flac,.ogg">
-      <div class="drop-icon">🎵</div>
-      <div class="drop-label">Song</div>
-      <div class="drop-hint">WAV, MP3, AIFF</div>
-      <div class="drop-filename" id="songName"></div>
+  <!-- HEADER -->
+  <header class="sys-header">
+    <div class="logo">VID<em>//</em>CHOPPER</div>
+    <div class="header-indicators">
+      <div class="ind"><span class="led led-c"></span>SYS:ONLINE</div>
+      <div class="ind"><span class="led led-g"></span>FFT:READY</div>
+      <div class="ind"><span class="led led-p"></span>BANDPASS:8KHz</div>
+      <div class="ind"><span class="led led-o"></span>XCORR:ARMED</div>
+      <div class="ind">WINDOW:0.8s · HOP:0.5s</div>
     </div>
+    <div class="header-ver">v2.0.0 // BUILD:2506</div>
+  </header>
 
-    <div class="drop-zone" id="videoZone">
-      <input type="file" id="videoFile" accept=".mp4,.mov,.avi,.mkv,.webm">
-      <div class="drop-icon">🎬</div>
-      <div class="drop-label">Original Video</div>
-      <div class="drop-hint">MP4, MOV, AVI</div>
-      <div class="drop-filename" id="videoName"></div>
-    </div>
-  </div>
+  <!-- MAIN GRID -->
+  <div class="main-grid">
 
-  <div class="options-row">
-    <div class="option-group">
-      <label>Gap Mode</label>
-      <div class="toggle-buttons">
-        <button class="toggle-btn" data-mode="freeze" onclick="setGapMode(this)">Freeze Frame</button>
-        <button class="toggle-btn active" data-mode="black" onclick="setGapMode(this)">Black Screen</button>
+    <!-- INPUT MATRIX -->
+    <div class="panel">
+      <div class="panel-title"><span class="slash">//</span> INPUT MATRIX</div>
+      <div class="drop-stack">
+
+        <div class="drop-zone" id="songZone">
+          <input type="file" id="songFile" accept=".wav,.mp3,.aiff,.flac,.ogg">
+          <div class="dz-type">Audio Source</div>
+          <div class="dz-ring">♫</div>
+          <div class="dz-hint" id="songHint">WAV · MP3 · AIFF · FLAC</div>
+          <div class="dz-hint has" id="songName" style="display:none"></div>
+        </div>
+
+        <div class="drop-zone" id="videoZone">
+          <input type="file" id="videoFile" accept=".mp4,.mov,.avi,.mkv,.webm">
+          <div class="dz-type">Video Source</div>
+          <div class="dz-ring">▶</div>
+          <div class="dz-hint" id="videoHint">MP4 · MOV · AVI · MKV</div>
+          <div class="dz-hint has" id="videoName" style="display:none"></div>
+        </div>
+
       </div>
     </div>
 
-    <div class="option-group">
-      <label>Sensitivity <span id="sensitivityVal">25%</span></label>
-      <div class="slider-wrap">
-        <div class="slider-labels"><span>Strict</span><span>Loose</span></div>
+    <!-- DIAGNOSTIC ARRAY -->
+    <div class="panel">
+      <div class="panel-title"><span class="slash">//</span> DIAGNOSTIC ARRAY</div>
+      <div class="diag-inner">
+
+        <div class="spectrum-box">
+          <div class="spec-label">// AUDIO SPECTRUM MONITOR</div>
+          <div class="spec-bars" id="specBars"></div>
+        </div>
+
+        <div class="metrics-row">
+          <div class="met">
+            <div class="met-lbl">DSP LOAD</div>
+            <div class="met-bar-bg"><div class="met-bar" style="width:73%"></div></div>
+            <div class="met-val">73%</div>
+          </div>
+          <div class="met">
+            <div class="met-lbl">FILTER</div>
+            <div class="met-bar-bg"><div class="met-bar" style="width:100%;background:var(--g);box-shadow:0 0 4px var(--g)"></div></div>
+            <div class="met-val g">ACTIVE</div>
+          </div>
+          <div class="met">
+            <div class="met-lbl">ALGO</div>
+            <div class="met-bar-bg"><div class="met-bar" style="width:100%"></div></div>
+            <div class="met-val">FFT-XC</div>
+          </div>
+        </div>
+
+        <div class="algo-box">
+          <span class="hl">DECODE</span> &nbsp;·· 8KHz MONO FFMPEG<br>
+          <span class="hl">BAND</span> &nbsp;&nbsp;&nbsp;·· <span class="hl2">300Hz → 3400Hz</span> VOICE<br>
+          <span class="hl">MATCH</span> &nbsp;&nbsp;·· <span class="hlg">PER-WINDOW · NO GROUPING</span><br>
+          <span class="hl">SPEED</span> &nbsp;&nbsp;·· 0.70× – 1.30× DETECT<br>
+          <span class="hl">SILENT</span> &nbsp;·· RMS &lt; 0.015 → SKIP
+        </div>
+
+      </div>
+    </div>
+
+  </div><!-- /main-grid -->
+
+  <!-- PARAMETERS -->
+  <div class="panel params-panel">
+    <div class="panel-title"><span class="slash">//</span> PARAMETER CONFIG</div>
+    <div class="params-grid">
+
+      <div>
+        <label class="param-lbl">Gap Mode Protocol</label>
+        <div class="toggle-row">
+          <button class="tbtn" data-mode="freeze" onclick="setGap(this)">Freeze Frame</button>
+          <button class="tbtn active" data-mode="black" onclick="setGap(this)">Black Screen</button>
+        </div>
+      </div>
+
+      <div>
+        <label class="param-lbl">
+          Sensitivity Threshold
+          <span class="param-val" id="sensVal">25%</span>
+        </label>
+        <div class="slider-ends"><span>STRICT</span><span>LOOSE</span></div>
         <input type="range" id="sensitivity" min="5" max="50" value="25"
-               oninput="document.getElementById('sensitivityVal').textContent = this.value + '%'">
+               oninput="document.getElementById('sensVal').textContent=this.value+'%'">
       </div>
+
     </div>
   </div>
 
-  <button class="process-btn" id="processBtn" onclick="startProcess()" disabled>
-    Process
-  </button>
+  <!-- PROCESS BUTTON -->
+  <div class="proc-wrap">
+    <button class="proc-btn" id="processBtn" onclick="startProcess()" disabled>
+      INITIALIZE SYNC PROTOCOL
+    </button>
+  </div>
 
-  <div class="progress-section" id="progressSection">
-    <div class="progress-bar-bg">
-      <div class="progress-bar-fill" id="progressFill"></div>
+  <!-- OUTPUT PANEL -->
+  <div class="panel out-panel" id="outPanel">
+    <div class="panel-title"><span class="slash">//</span> OUTPUT MATRIX</div>
+    <div class="prog-track">
+      <div class="prog-fill" id="progFill"></div>
     </div>
-    <div class="status-msg" id="statusMsg">Starting...</div>
-    <a class="download-btn" id="downloadBtn" href="/download" download="music_video.mp4">
-      Download Music Video
+    <div class="out-row">
+      <div class="out-msg" id="outMsg">AWAITING INPUT...</div>
+      <div class="clips-badge" id="clipsBadge"></div>
+    </div>
+    <a class="dl-btn" id="dlBtn" href="/download" download="music_video.mp4">
+      EXTRACT OUTPUT FILE
     </a>
   </div>
 
-</div>
+  <footer>
+    <span>VCH-2000 · AUDIO-VISUAL SYNC ENGINE</span>
+    <span>BANDPASS · FFT · XCORR · MOVIEPY · FFMPEG</span>
+    <span>SYS:READY // PORT:7435</span>
+  </footer>
+
+</div><!-- /wrapper -->
 
 <script>
-  let gapMode = 'black';
-  let songFileObj = null;
-  let videoFileObj = null;
-  let polling = null;
+  // ─── Spectrum bars ───────────────────────────────────────────────
+  const specData = [6,12,22,16,30,42,34,26,40,46,36,20,14,28,44,38,24,10,18,32,28,16,36,44,22,14,36,42,28,20,10,26,38,32,18,14,42,34,22,28,16,24,40,36,20,12];
+  const specEl = document.getElementById('specBars');
+  specData.forEach(h => {
+    const b = document.createElement('div');
+    b.className = 'sb';
+    const lo = Math.max(2, Math.round(h * 0.25));
+    const dur = (0.35 + Math.random() * 0.85).toFixed(2);
+    const dl  = (Math.random() * 0.6).toFixed(2);
+    b.style.cssText = `--lo:${lo}px;--hi:${h}px;--d:${dur}s;--dl:${dl}s;height:${lo}px`;
+    specEl.appendChild(b);
+  });
 
-  function setGapMode(btn) {
-    document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+  // ─── State ───────────────────────────────────────────────────────
+  let gapMode = 'black';
+  let songFile = null;
+  let videoFile = null;
+  let poll = null;
+
+  function setGap(btn) {
+    document.querySelectorAll('.tbtn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     gapMode = btn.dataset.mode;
   }
 
-  function onFileChange(inputId, zoneId, nameId, fileType) {
-    const input = document.getElementById(inputId);
-    const zone = document.getElementById(zoneId);
-    const nameEl = document.getElementById(nameId);
-    input.addEventListener('change', function () {
-      const file = this.files[0];
-      if (!file) return;
-      if (fileType === 'song') songFileObj = file;
-      else videoFileObj = file;
-      nameEl.textContent = file.name;
-      zone.classList.add('has-file');
+  function bindFile(inputId, zoneId, hintId, nameId, type) {
+    document.getElementById(inputId).addEventListener('change', function () {
+      const f = this.files[0];
+      if (!f) return;
+      if (type === 'song') songFile = f; else videoFile = f;
+      document.getElementById(hintId).style.display = 'none';
+      const n = document.getElementById(nameId);
+      n.textContent = '> ' + f.name;
+      n.style.display = 'block';
+      document.getElementById(zoneId).classList.add('has-file');
       checkReady();
     });
-  }
-
-  function checkReady() {
-    document.getElementById('processBtn').disabled = !(songFileObj && videoFileObj);
-  }
-
-  onFileChange('songFile', 'songZone', 'songName', 'song');
-  onFileChange('videoFile', 'videoZone', 'videoName', 'video');
-
-  function dragEvents(zoneId, inputId, fileType, nameId) {
     const zone = document.getElementById(zoneId);
     zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
     zone.addEventListener('drop', e => {
       e.preventDefault();
       zone.classList.remove('drag-over');
-      const file = e.dataTransfer.files[0];
-      if (!file) return;
-      if (fileType === 'song') songFileObj = file;
-      else videoFileObj = file;
-      document.getElementById(nameId).textContent = file.name;
-      zone.classList.add('has-file');
+      const f = e.dataTransfer.files[0];
+      if (!f) return;
+      if (type === 'song') songFile = f; else videoFile = f;
+      document.getElementById(hintId).style.display = 'none';
+      const n = document.getElementById(nameId);
+      n.textContent = '> ' + f.name;
+      n.style.display = 'block';
+      document.getElementById(zoneId).classList.add('has-file');
       checkReady();
     });
   }
 
-  dragEvents('songZone', 'songFile', 'song', 'songName');
-  dragEvents('videoZone', 'videoFile', 'video', 'videoName');
+  bindFile('songFile',  'songZone',  'songHint',  'songName',  'song');
+  bindFile('videoFile', 'videoZone', 'videoHint', 'videoName', 'video');
+
+  function checkReady() {
+    document.getElementById('processBtn').disabled = !(songFile && videoFile);
+  }
 
   async function startProcess() {
-    const btn = document.getElementById('processBtn');
-    const section = document.getElementById('progressSection');
-    const fill = document.getElementById('progressFill');
-    const msg = document.getElementById('statusMsg');
-    const dlBtn = document.getElementById('downloadBtn');
+    const btn   = document.getElementById('processBtn');
+    const panel = document.getElementById('outPanel');
+    const fill  = document.getElementById('progFill');
+    const msg   = document.getElementById('outMsg');
+    const dl    = document.getElementById('dlBtn');
+    const badge = document.getElementById('clipsBadge');
 
     btn.disabled = true;
-    section.classList.add('visible');
-    fill.className = 'progress-bar-fill';
+    panel.classList.add('on');
+    fill.className = 'prog-fill';
     fill.style.width = '0%';
-    msg.className = 'status-msg';
-    msg.textContent = 'Uploading files...';
-    dlBtn.classList.remove('visible');
+    msg.className = 'out-msg';
+    msg.textContent = '> UPLOADING FILES...';
+    dl.classList.remove('on');
+    badge.style.display = 'none';
 
     const form = new FormData();
-    form.append('song', songFileObj);
-    form.append('video', videoFileObj);
+    form.append('song', songFile);
+    form.append('video', videoFile);
     form.append('gap_mode', gapMode);
     form.append('sensitivity', (document.getElementById('sensitivity').value / 100).toFixed(2));
 
@@ -417,55 +834,55 @@
       const res = await fetch('/process', { method: 'POST', body: form });
       const data = await res.json();
       if (data.error) {
-        msg.className = 'status-msg error';
+        msg.className = 'out-msg error';
         msg.textContent = data.error;
         btn.disabled = false;
         return;
       }
     } catch (e) {
-      msg.className = 'status-msg error';
-      msg.textContent = 'Upload failed: ' + e.message;
+      msg.className = 'out-msg error';
+      msg.textContent = 'UPLOAD FAILED: ' + e.message;
       btn.disabled = false;
       return;
     }
 
-    polling = setInterval(pollStatus, 600);
+    poll = setInterval(pollStatus, 600);
   }
 
   async function pollStatus() {
     try {
-      const res = await fetch('/status');
+      const res  = await fetch('/status');
       const data = await res.json();
-      const fill = document.getElementById('progressFill');
-      const msg = document.getElementById('statusMsg');
-      const dlBtn = document.getElementById('downloadBtn');
-      const btn = document.getElementById('processBtn');
+      const fill  = document.getElementById('progFill');
+      const msg   = document.getElementById('outMsg');
+      const dl    = document.getElementById('dlBtn');
+      const btn   = document.getElementById('processBtn');
+      const badge = document.getElementById('clipsBadge');
 
       fill.style.width = data.percent + '%';
 
-      let label = data.message;
-      if (data.segments > 0) label += ` <span class="segments-badge">${data.segments} clips</span>`;
+      if (data.segments > 0) {
+        badge.textContent = data.segments + ' CLIPS SYNCED';
+        badge.style.display = 'inline-block';
+      }
 
       if (data.status === 'done') {
-        clearInterval(polling);
+        clearInterval(poll);
         fill.classList.add('done');
-        msg.innerHTML = label;
-        dlBtn.classList.add('visible');
+        msg.textContent = '> ' + data.message;
+        dl.classList.add('on');
         btn.disabled = false;
       } else if (data.status === 'error') {
-        clearInterval(polling);
+        clearInterval(poll);
         fill.classList.add('error');
-        msg.className = 'status-msg error';
+        msg.className = 'out-msg error';
         msg.textContent = data.message;
         btn.disabled = false;
       } else {
-        msg.innerHTML = label;
+        msg.textContent = '> ' + data.message;
       }
-    } catch (e) {
-      // network blip, keep polling
-    }
+    } catch (_) {}
   }
 </script>
-
 </body>
 </html>
