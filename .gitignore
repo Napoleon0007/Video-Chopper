@@ -3,6 +3,9 @@ __pycache__/
 *.pyo
 uploads/
 output/
+cache/*
+!cache/.gitkeep
+!cache/*.json
 *.mp4
 *.mov
 *.avi

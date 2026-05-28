@@ -43,10 +43,10 @@ def file_hash(path):
     return h.hexdigest()
 
 
-def cached_transcribe(model, audio_path, model_name, chunked=False):
+def cached_transcribe(model, audio_path, model_name, chunked=False, source=False):
     """Transcribe with on-disk cache keyed by file content + model + mode."""
     h = file_hash(audio_path)
-    mode = 'chunked' if chunked else 'single'
+    mode = 'chunked' if chunked else ('source' if source else 'single')
     cache_path = os.path.join(CACHE_DIR, f'{h}_{model_name}_{mode}.json')
     if os.path.exists(cache_path):
         with open(cache_path) as f:
@@ -54,7 +54,7 @@ def cached_transcribe(model, audio_path, model_name, chunked=False):
     if chunked:
         words = transcribe_words_chunked(model, audio_path)
     else:
-        words = transcribe_words(model, audio_path)
+        words = transcribe_words(model, audio_path, source=source)
     with open(cache_path, 'w') as f:
         json.dump(words, f)
     return words
@@ -161,21 +161,34 @@ def estimate_bpm_and_beats(audio_path, min_bpm=70, max_bpm=180):
     return round(bpm, 1), beats
 
 
+# Song: VAD off, all bail-out thresholds disabled — chopped speech with
+# repetitive phrases would otherwise trip the hallucination guard.
 WHISPER_KWARGS = dict(
     word_timestamps=True,
     vad_filter=False,
     language='en',
-    beam_size=1,                       # 5 → 1 cuts CPU time ~5x with minimal accuracy loss on clear speech
+    beam_size=1,
     no_speech_threshold=0.1,
     compression_ratio_threshold=100.0,
     log_prob_threshold=-10.0,
     condition_on_previous_text=False,
 )
 
+# Source video: VAD ON skips silences (much faster); keep defaults
+# otherwise since the audio is clean continuous speech.
+WHISPER_KWARGS_SOURCE = dict(
+    word_timestamps=True,
+    vad_filter=True,
+    language='en',
+    beam_size=1,
+    condition_on_previous_text=False,
+)
 
-def transcribe_words(model, audio_path):
+
+def transcribe_words(model, audio_path, source=False):
     """Run Whisper on a single file."""
-    segments, _info = model.transcribe(audio_path, **WHISPER_KWARGS)
+    kwargs = WHISPER_KWARGS_SOURCE if source else WHISPER_KWARGS
+    segments, _info = model.transcribe(audio_path, **kwargs)
     words = []
     for seg in segments:
         for w in (seg.words or []):
@@ -277,7 +290,7 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base', bro
         song_words = cached_transcribe(model, song_wav, model_name, chunked=True)
 
         upd(message='Transcribing original video...', percent=40)
-        orig_words = cached_transcribe(model, orig_wav, model_name, chunked=False)
+        orig_words = cached_transcribe(model, orig_wav, model_name, chunked=False, source=True)
 
         os.unlink(song_wav)
         os.unlink(orig_wav)
@@ -502,7 +515,7 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base', bro
             codec='libx264',
             audio_codec='aac',
             audio_bitrate='96k',
-            preset='slow',
+            preset='medium',                  # 'slow' was 2–3× longer for ~10% extra compression — not worth it
             ffmpeg_params=[
                 '-pix_fmt', 'yuv420p',
                 '-crf', '28',
@@ -592,6 +605,18 @@ def download():
     if not path or not os.path.exists(path):
         return 'No output file', 404
     return send_file(path, as_attachment=True, download_name='music_video.mp4')
+
+
+def _warmup():
+    """Load Whisper in a background thread so the first request is fast."""
+    try:
+        get_whisper('base')
+        print('[warmup] Whisper model loaded.')
+    except Exception as e:
+        print(f'[warmup] failed: {e}')
+
+
+threading.Thread(target=_warmup, daemon=True).start()
 
 
 if __name__ == '__main__':
