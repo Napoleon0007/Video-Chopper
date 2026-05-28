@@ -166,11 +166,14 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
         song_wav = transcode_to_wav16(song_path)
         orig_wav = transcode_to_wav16(video_path)
 
-        upd(message='Transcribing song (Whisper, chunked)...', percent=14)
-        song_words = transcribe_words_chunked(model, song_wav)
+        upd(message='Transcribing song (chunked)...', percent=14)
+        # Chunk only the song — the chopped/repetitive content is what causes
+        # Whisper to bail early. The source video is continuous speech and
+        # transcribes fine in one pass.
+        song_words = transcribe_words_chunked(model, song_wav, chunk_sec=30.0, overlap_sec=2.0)
 
-        upd(message='Transcribing original video (Whisper, chunked)...', percent=40)
-        orig_words = transcribe_words_chunked(model, orig_wav)
+        upd(message='Transcribing original video...', percent=40)
+        orig_words = transcribe_words(model, orig_wav)
 
         os.unlink(song_wav)
         os.unlink(orig_wav)
