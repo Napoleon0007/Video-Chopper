@@ -3,9 +3,11 @@ import re
 import json
 import random
 import hashlib
+import secrets
 import threading
 import tempfile
 import subprocess
+import time as _time
 from collections import defaultdict
 from difflib import SequenceMatcher
 
@@ -596,18 +598,44 @@ def index():
     return render_template('index.html')
 
 
+def _safe_upload_path(name):
+    """Resolve a client-supplied filename to a real file inside UPLOAD_DIR."""
+    if not name:
+        return None
+    base = os.path.basename(name)
+    if not base or '..' in base or '/' in base or '\\' in base:
+        return None
+    p = os.path.join(UPLOAD_DIR, base)
+    if os.path.exists(p):
+        return p
+    return None
+
+
+@app.route('/upload', methods=['POST'])
+def upload_one():
+    """Single-file upload endpoint. Each large file gets its own short POST
+    so Railway's proxy doesn't time out a 5-minute multi-file upload."""
+    f = request.files.get('file')
+    role = request.form.get('role', 'misc')
+    if not f or not f.filename:
+        return jsonify({'error': 'no file'}), 400
+    ext = os.path.splitext(f.filename)[1].lower() or '.bin'
+    name = f'{role}_{int(_time.time() * 1000)}_{secrets.token_hex(4)}{ext}'
+    p = os.path.join(UPLOAD_DIR, name)
+    f.save(p)
+    return jsonify({'ok': True, 'name': name, 'size': os.path.getsize(p), 'role': role})
+
+
 @app.route('/process', methods=['POST'])
 def start_process():
     with job_lock:
         if job['status'] == 'processing':
             return jsonify({'error': 'Already processing'}), 400
 
-    song_file = request.files.get('song')
-    video_file = request.files.get('video')
     gap_mode = request.form.get('gap_mode', 'black')
     sensitivity = float(request.form.get('sensitivity', '0.25'))
     model_name = request.form.get('model', 'base')
-    broll_files = request.files.getlist('broll')
+
     browser_song_words_raw = request.form.get('song_words')
     browser_song_words = None
     if browser_song_words_raw:
@@ -618,22 +646,42 @@ def start_process():
         except Exception:
             browser_song_words = None
 
-    if not song_file or not video_file:
-        return jsonify({'error': 'Both song and video are required'}), 400
-
-    song_path = os.path.join(UPLOAD_DIR, 'song' + os.path.splitext(song_file.filename)[1])
-    video_path = os.path.join(UPLOAD_DIR, 'video' + os.path.splitext(video_file.filename)[1])
-    song_file.save(song_path)
-    video_file.save(video_path)
+    # New path: client uploaded files via /upload, now sends server-side names.
+    song_path = _safe_upload_path(request.form.get('song_name'))
+    video_path = _safe_upload_path(request.form.get('video_name'))
 
     broll_paths = []
-    for i, bf in enumerate(broll_files or []):
+    broll_names_json = request.form.get('broll_names')
+    if broll_names_json:
+        try:
+            for n in json.loads(broll_names_json):
+                p = _safe_upload_path(n)
+                if p:
+                    broll_paths.append(p)
+        except Exception:
+            pass
+
+    # Legacy path: single multipart POST with file objects (still supported).
+    if not song_path:
+        sf = request.files.get('song')
+        if sf:
+            song_path = os.path.join(UPLOAD_DIR, 'song' + os.path.splitext(sf.filename)[1])
+            sf.save(song_path)
+    if not video_path:
+        vf = request.files.get('video')
+        if vf:
+            video_path = os.path.join(UPLOAD_DIR, 'video' + os.path.splitext(vf.filename)[1])
+            vf.save(video_path)
+    for i, bf in enumerate(request.files.getlist('broll') or []):
         if not bf or not bf.filename:
             continue
         ext = os.path.splitext(bf.filename)[1] or '.mp4'
-        p = os.path.join(UPLOAD_DIR, f'broll_{i}{ext}')
+        p = os.path.join(UPLOAD_DIR, f'broll_legacy_{i}{ext}')
         bf.save(p)
         broll_paths.append(p)
+
+    if not song_path or not video_path:
+        return jsonify({'error': 'Both song and video are required'}), 400
 
     upd(status='processing', message='Starting...', percent=0, output=None, segments=0)
     threading.Thread(

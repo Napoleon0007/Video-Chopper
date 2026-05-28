@@ -979,6 +979,47 @@
     return (b / 1073741824).toFixed(2) + ' GB';
   }
 
+  function uploadOne(file, role, onProgress) {
+    return new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('role', role);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/upload', true);
+      xhr.timeout = 0;
+      xhr.upload.addEventListener('progress', e => {
+        if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+      });
+      xhr.onload = () => {
+        try {
+          const d = JSON.parse(xhr.responseText);
+          if (d.error) reject(new Error(d.error));
+          else resolve(d.name);
+        } catch (e) { reject(new Error('HTTP ' + xhr.status)); }
+      };
+      xhr.onerror = () => reject(new Error('network error (status=' + xhr.status + ')'));
+      xhr.ontimeout = () => reject(new Error('upload timeout'));
+      xhr.send(fd);
+    });
+  }
+
+  async function uploadWithRetry(file, role, label, onProgress, retries = 2) {
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await uploadOne(file, role, onProgress);
+      } catch (e) {
+        lastErr = e;
+        if (attempt < retries) {
+          const msg = document.getElementById('outMsg');
+          msg.textContent = '> ' + label + ' RETRY ' + (attempt + 1) + '/' + retries + ' (' + e.message + ')';
+          await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   async function startProcess() {
     const btn   = document.getElementById('processBtn');
     const panel = document.getElementById('outPanel');
@@ -995,57 +1036,98 @@
     dl.classList.remove('on');
     badge.style.display = 'none';
 
-    // Stage 1: transcribe the song in the browser (Whisper tiny via transformers.js)
+    // Stage 1: transcribe the song in the browser.
     let songWords = null;
     if (window.browserTranscribe) {
       try {
         songWords = await window.browserTranscribe(songFile, (s) => {
           msg.textContent = '> ' + s;
         });
-        msg.textContent = '> ' + songWords.length + ' words found in song. Preparing upload...';
+        msg.textContent = '> ' + songWords.length + ' words found in song.';
       } catch (e) {
-        msg.textContent = '> Browser transcription failed (' + e.message + '). Server will transcribe instead.';
+        msg.textContent = '> Browser transcription failed (' + e.message + '). Server will retry.';
         songWords = null;
       }
     }
 
-    const totalBytes = songFile.size + videoFile.size + brollFiles.reduce((a, f) => a + f.size, 0);
+    // Stage 2: upload files one at a time so each request stays short.
+    const totalFiles = 2 + brollFiles.length;
+    let fileIdx = 0;
 
-    const form = new FormData();
-    form.append('song', songFile);
-    form.append('video', videoFile);
-    form.append('gap_mode', gapMode);
-    form.append('sensitivity', (document.getElementById('sensitivity').value / 100).toFixed(2));
-    if (songWords) form.append('song_words', JSON.stringify(songWords));
-    brollFiles.forEach(f => form.append('broll', f));
+    function uploadProgress(label, idx) {
+      return (loaded, total) => {
+        const pct = (loaded / total) * 100;
+        fill.style.width = pct.toFixed(1) + '%';
+        const elapsed = (Date.now() - perFileStart) / 1000;
+        const rate = loaded / Math.max(elapsed, 0.5);
+        const remain = (total - loaded) / Math.max(rate, 1);
+        msg.textContent = '> [' + idx + '/' + totalFiles + '] ' + label + ' · '
+          + fmtBytes(loaded) + '/' + fmtBytes(total) + ' · '
+          + fmtBytes(rate) + '/s · ' + fmtSec(remain) + ' left';
+      };
+    }
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/process', true);
+    let songName, videoName;
+    const brollNames = [];
 
-    const startedAt = Date.now();
+    let perFileStart = Date.now();
 
-    xhr.upload.addEventListener('progress', e => {
-      if (!e.lengthComputable) return;
-      const pct = (e.loaded / e.total) * 100;
-      fill.style.width = pct.toFixed(1) + '%';
-      const elapsed = (Date.now() - startedAt) / 1000;
-      const rate = e.loaded / Math.max(elapsed, 0.5);
-      const remain = (e.total - e.loaded) / Math.max(rate, 1);
-      msg.textContent = '> UPLOAD ' + fmtBytes(e.loaded) + ' / ' + fmtBytes(e.total)
-                      + ' · ' + fmtBytes(rate) + '/s · ' + Math.ceil(remain) + 's left';
-    });
+    // Song
+    fileIdx++;
+    perFileStart = Date.now();
+    try {
+      songName = await uploadWithRetry(songFile, 'song', 'SONG', uploadProgress('SONG', fileIdx));
+    } catch (e) {
+      msg.className = 'out-msg error';
+      msg.textContent = 'SONG UPLOAD FAILED · ' + e.message;
+      btn.disabled = false;
+      return;
+    }
 
-    xhr.upload.addEventListener('load', () => {
-      fill.style.width = '0%';
-      msg.textContent = '> UPLOAD COMPLETE · PROCESSING...';
-    });
+    // Source video
+    fileIdx++;
+    perFileStart = Date.now();
+    try {
+      videoName = await uploadWithRetry(videoFile, 'video', 'VIDEO', uploadProgress('SOURCE VIDEO', fileIdx));
+    } catch (e) {
+      msg.className = 'out-msg error';
+      msg.textContent = 'VIDEO UPLOAD FAILED · ' + e.message;
+      btn.disabled = false;
+      return;
+    }
 
-    xhr.onload = async () => {
-      let data;
-      try { data = JSON.parse(xhr.responseText); }
-      catch { data = { error: 'HTTP ' + xhr.status + ': ' + (xhr.responseText || '').slice(0, 200) }; }
+    // B-roll, one at a time
+    for (let i = 0; i < brollFiles.length; i++) {
+      fileIdx++;
+      perFileStart = Date.now();
+      try {
+        const n = await uploadWithRetry(
+          brollFiles[i], 'broll', 'B-ROLL ' + (i + 1),
+          uploadProgress('B-ROLL ' + (i + 1) + '/' + brollFiles.length, fileIdx)
+        );
+        brollNames.push(n);
+      } catch (e) {
+        msg.textContent = '> B-ROLL ' + (i + 1) + ' SKIPPED (' + e.message + ')';
+      }
+    }
+
+    // Stage 3: kick off processing — small POST with just paths + metadata.
+    fill.style.width = '0%';
+    msg.textContent = '> ALL UPLOADS COMPLETE · STARTING PROCESSING...';
+
+    const fd = new FormData();
+    fd.append('song_name', songName);
+    fd.append('video_name', videoName);
+    fd.append('broll_names', JSON.stringify(brollNames));
+    fd.append('gap_mode', gapMode);
+    fd.append('sensitivity', (document.getElementById('sensitivity').value / 100).toFixed(2));
+    if (songWords) fd.append('song_words', JSON.stringify(songWords));
+
+    try {
+      const res = await fetch('/process', { method: 'POST', body: fd });
+      const data = await res.json();
       if (data.error) {
-        if (data.error && data.error.toLowerCase().includes('already processing')) {
+        if (data.error.toLowerCase().includes('already processing')) {
           try { await fetch('/reset', { method: 'POST' }); } catch {}
           msg.className = 'out-msg error';
           msg.textContent = 'PREVIOUS JOB CLEARED — click Process again.';
@@ -1056,30 +1138,14 @@
         btn.disabled = false;
         return;
       }
-      poll = setInterval(pollStatus, 600);
-    };
-
-    xhr.onerror = () => {
+    } catch (e) {
       msg.className = 'out-msg error';
-      msg.textContent = 'UPLOAD FAILED · status=' + xhr.status + ' · state=' + xhr.readyState
-        + ' · likely upload timeout or connection drop. Try fewer/smaller B-roll files.';
+      msg.textContent = 'PROCESS START FAILED: ' + e.message;
       btn.disabled = false;
-    };
+      return;
+    }
 
-    xhr.ontimeout = () => {
-      msg.className = 'out-msg error';
-      msg.textContent = 'UPLOAD TIMEOUT after ' + ((Date.now() - startedAt) / 1000).toFixed(0) + 's';
-      btn.disabled = false;
-    };
-
-    xhr.onabort = () => {
-      msg.className = 'out-msg error';
-      msg.textContent = 'UPLOAD ABORTED';
-      btn.disabled = false;
-    };
-
-    xhr.timeout = 0;  // no client-side timeout
-    xhr.send(form);
+    poll = setInterval(pollStatus, 600);
   }
 
   async function pollStatus() {
