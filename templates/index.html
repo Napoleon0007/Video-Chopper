@@ -752,6 +752,70 @@
 
 </div><!-- /wrapper -->
 
+<script type="module">
+  // Browser-side Whisper via transformers.js. Exposed on window so the
+  // legacy non-module script below can call it.
+  import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+  env.allowLocalModels = false;
+  env.useBrowserCache = true;
+
+  let _transcriber = null;
+  async function getTranscriber(onProgress) {
+    if (_transcriber) return _transcriber;
+    _transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny.en', {
+      progress_callback: onProgress,
+    });
+    return _transcriber;
+  }
+
+  async function decodeTo16kMono(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    // Decode at the file's native rate, then resample via OfflineAudioContext.
+    const tempCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const audioBuffer = await tempCtx.decodeAudioData(arrayBuffer);
+    tempCtx.close();
+    const targetSr = 16000;
+    const off = new OfflineAudioContext(1, Math.ceil(audioBuffer.duration * targetSr), targetSr);
+    const src = off.createBufferSource();
+    src.buffer = audioBuffer;
+    src.connect(off.destination);
+    src.start();
+    const rendered = await off.startRendering();
+    return rendered.getChannelData(0);
+  }
+
+  window.browserTranscribe = async function (file, onStatus) {
+    onStatus('LOADING TRANSCRIPTION MODEL (cached after first use)...');
+    const transcriber = await getTranscriber((p) => {
+      if (p.status === 'progress' && p.total) {
+        const pct = (p.loaded / p.total * 100).toFixed(0);
+        onStatus('DOWNLOADING MODEL ' + pct + '% (' + (p.total / 1048576).toFixed(0) + 'MB total)');
+      } else if (p.status === 'ready') {
+        onStatus('MODEL READY');
+      }
+    });
+
+    onStatus('DECODING AUDIO...');
+    const audio = await decodeTo16kMono(file);
+
+    onStatus('TRANSCRIBING ' + (audio.length / 16000).toFixed(0) + 's OF AUDIO (in browser)...');
+    const result = await transcriber(audio, {
+      return_timestamps: 'word',
+      chunk_length_s: 30,
+      stride_length_s: 5,
+    });
+
+    const chunks = result.chunks || [];
+    return chunks
+      .filter(c => c.timestamp && c.timestamp[0] != null && c.text && c.text.trim())
+      .map(c => ({
+        word: c.text.trim(),
+        start: c.timestamp[0],
+        end: c.timestamp[1] != null ? c.timestamp[1] : c.timestamp[0] + 0.3,
+      }));
+  };
+</script>
+
 <script>
   // ─── Spectrum bars ───────────────────────────────────────────────
   const specData = [6,12,22,16,30,42,34,26,40,46,36,20,14,28,44,38,24,10,18,32,28,16,36,44,22,14,36,42,28,20,10,26,38,32,18,14,42,34,22,28,16,24,40,36,20,12];
@@ -852,7 +916,7 @@
     return (b / 1073741824).toFixed(2) + ' GB';
   }
 
-  function startProcess() {
+  async function startProcess() {
     const btn   = document.getElementById('processBtn');
     const panel = document.getElementById('outPanel');
     const fill  = document.getElementById('progFill');
@@ -868,14 +932,28 @@
     dl.classList.remove('on');
     badge.style.display = 'none';
 
+    // Stage 1: transcribe the song in the browser (Whisper tiny via transformers.js)
+    let songWords = null;
+    if (window.browserTranscribe) {
+      try {
+        songWords = await window.browserTranscribe(songFile, (s) => {
+          msg.textContent = '> ' + s;
+        });
+        msg.textContent = '> ' + songWords.length + ' words found in song. Preparing upload...';
+      } catch (e) {
+        msg.textContent = '> Browser transcription failed (' + e.message + '). Server will transcribe instead.';
+        songWords = null;
+      }
+    }
+
     const totalBytes = songFile.size + videoFile.size + brollFiles.reduce((a, f) => a + f.size, 0);
-    msg.textContent = '> UPLOADING ' + fmtBytes(totalBytes) + '...';
 
     const form = new FormData();
     form.append('song', songFile);
     form.append('video', videoFile);
     form.append('gap_mode', gapMode);
     form.append('sensitivity', (document.getElementById('sensitivity').value / 100).toFixed(2));
+    if (songWords) form.append('song_words', JSON.stringify(songWords));
     brollFiles.forEach(f => form.append('broll', f));
 
     const xhr = new XMLHttpRequest();

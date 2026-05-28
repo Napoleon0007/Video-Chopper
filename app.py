@@ -287,36 +287,51 @@ def best_fuzzy_match(target, candidates_by_norm, min_score=0.72):
     return best, candidates_by_norm[best]
 
 
-def process(song_path, video_path, gap_mode, sensitivity, model_name='base', broll_paths=None):
+def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
+            broll_paths=None, browser_song_words=None):
     broll_paths = broll_paths or []
     try:
-        # Song uses 'tiny' (3-4× faster on Railway CPU, accuracy is fine with
-        # the fuzzy matcher). Source video uses 'base' so we still benefit
-        # from the pre-built base cache shipped in the repo.
-        song_model_name = 'tiny'
         source_model_name = model_name  # default 'base'
 
-        upd(status='processing', message='Loading Whisper models...', percent=4)
-        song_model = get_whisper(song_model_name)
-        source_model = get_whisper(source_model_name)
-
-        upd(message='Transcoding audio for transcription...', percent=8)
+        upd(message='Transcoding audio for BPM detection...', percent=6)
         song_wav = transcode_to_wav16(song_path)
         orig_wav = transcode_to_wav16(video_path)
 
-        upd(message='Detecting BPM and beat grid...', percent=11)
+        upd(message='Detecting BPM and beat grid...', percent=10)
         bpm, beat_times = estimate_bpm_and_beats(song_wav)
 
-        upd(message=f'Transcribing song ({bpm:.0f} BPM, tiny model)...', percent=14)
+        if browser_song_words:
+            # Browser already did the slow part — drop the words straight in,
+            # normalising them so the matching code can use them.
+            upd(message=f'Song transcribed in browser — {len(browser_song_words)} words.', percent=30)
+            song_words = []
+            for w in browser_song_words:
+                norm = normalize_word(w.get('word', ''))
+                if not norm:
+                    continue
+                song_words.append({
+                    'word': str(w.get('word', '')).strip(),
+                    'norm': norm,
+                    'start': float(w.get('start', 0)),
+                    'end': float(w.get('end', 0)),
+                })
+        else:
+            # Fallback: transcribe server-side using tiny model
+            song_model_name = 'tiny'
+            upd(status='processing', message='Loading Whisper models...', percent=12)
+            song_model = get_whisper(song_model_name)
 
-        def _song_progress(i, total):
-            pct = 14 + int(24 * i / max(1, total))
-            upd(message=f'Transcribing song chunk {i + 1}/{total}...', percent=pct)
+            upd(message=f'Transcribing song ({bpm:.0f} BPM, tiny model)...', percent=14)
 
-        song_words = cached_transcribe(
-            song_model, song_wav, song_model_name, chunked=True, progress_cb=_song_progress
-        )
+            def _song_progress(i, total):
+                pct = 14 + int(24 * i / max(1, total))
+                upd(message=f'Transcribing song chunk {i + 1}/{total}...', percent=pct)
 
+            song_words = cached_transcribe(
+                song_model, song_wav, song_model_name, chunked=True, progress_cb=_song_progress
+            )
+
+        source_model = get_whisper(source_model_name)
         upd(message='Transcribing original video...', percent=40)
         orig_words = cached_transcribe(source_model, orig_wav, source_model_name, chunked=False, source=True)
 
@@ -593,6 +608,15 @@ def start_process():
     sensitivity = float(request.form.get('sensitivity', '0.25'))
     model_name = request.form.get('model', 'base')
     broll_files = request.files.getlist('broll')
+    browser_song_words_raw = request.form.get('song_words')
+    browser_song_words = None
+    if browser_song_words_raw:
+        try:
+            browser_song_words = json.loads(browser_song_words_raw)
+            if not isinstance(browser_song_words, list):
+                browser_song_words = None
+        except Exception:
+            browser_song_words = None
 
     if not song_file or not video_file:
         return jsonify({'error': 'Both song and video are required'}), 400
@@ -614,7 +638,7 @@ def start_process():
     upd(status='processing', message='Starting...', percent=0, output=None, segments=0)
     threading.Thread(
         target=process,
-        args=(song_path, video_path, gap_mode, sensitivity, model_name, broll_paths),
+        args=(song_path, video_path, gap_mode, sensitivity, model_name, broll_paths, browser_song_words),
         daemon=True,
     ).start()
     return jsonify({'ok': True})
