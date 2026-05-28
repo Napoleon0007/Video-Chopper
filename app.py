@@ -428,25 +428,10 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
         if song_pos < song_duration - 0.02:
             timeline.append({'type': 'gap', 'duration': song_duration - song_pos})
 
-        # Smooth: merge consecutive cuts when the source positions are adjacent.
-        # If "ANC government" was chopped intact from the original, both word-cuts
-        # become one continuous 1s clip instead of two sub-second jump cuts.
-        smoothed = []
-        for item in timeline:
-            if (
-                smoothed
-                and smoothed[-1].get('type') == 'cut'
-                and item.get('type') == 'cut'
-            ):
-                prev = smoothed[-1]
-                prev_orig_end = prev['orig_time'] + prev['orig_dur']
-                orig_gap = item['orig_time'] - prev_orig_end
-                if -0.1 <= orig_gap <= 0.25:
-                    prev['song_dur'] += item['song_dur']
-                    prev['orig_dur'] = item['orig_time'] + item['orig_dur'] - prev['orig_time']
-                    continue
-            smoothed.append(item)
-        timeline = smoothed
+        # Smoothing disabled — each song word is its own precise cut so
+        # the lip-sync timing is exact. Previously we merged adjacent cuts
+        # when the source positions were near-adjacent, but the merge moved
+        # the visible word away from the audio word slightly.
 
         cut_count = sum(1 for x in timeline if x.get('type') == 'cut')
         upd(
@@ -503,11 +488,21 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
                 dur = item.get('duration', 0)
                 if dur < 0.02:
                     continue
+
+                wants_video_fill = bool(broll_clips) or gap_mode == 'source'
+
+                if not wants_video_fill:
+                    # Solid gap (black / freeze) — one clip, full gap duration.
+                    if gap_mode == 'freeze':
+                        clips.append(ImageClip(last_frame.copy()).with_duration(dur).with_fps(fps))
+                    else:
+                        clips.append(ImageClip(black_frame).with_duration(dur).with_fps(fps))
+                    song_pos += dur
+                    continue
+
+                # Video-fill modes: split on the beat so cuts land on the BPM.
                 gap_start = song_pos
                 gap_end = song_pos + dur
-
-                # Cut on the beat: split the gap at every beat boundary so
-                # whatever fills it (B-roll or source-as-broll) lands on the BPM.
                 splits = [gap_start]
                 for b in beat_times:
                     if gap_start + 0.08 < b < gap_end - 0.08:
@@ -527,7 +522,6 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
                         continue
 
                     if broll_clips:
-                        # Random snippet from uploaded B-roll pool
                         broll = random.choice(broll_clips)
                         max_start = max(0.0, broll.duration - seg_dur - 0.05)
                         start = random.uniform(0.0, max_start) if max_start > 0.1 else 0.0
@@ -535,18 +529,12 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
                         bc = bc.resized(new_size=(target_w, target_h))
                         bc = bc.without_audio().with_duration(seg_dur).with_fps(fps)
                         clips.append(bc)
-                    elif gap_mode == 'source':
-                        # Random snippet from the source video itself —
-                        # always something to look at, audio stripped, on beat.
+                    else:  # gap_mode == 'source'
                         max_start = max(0.0, video_duration - seg_dur - 0.1)
                         start = random.uniform(0.0, max_start) if max_start > 0.1 else 0.0
                         sc = video_clip.subclipped(start, start + seg_dur).without_audio()
                         sc = sc.with_duration(seg_dur)
                         clips.append(sc)
-                    elif gap_mode == 'freeze':
-                        clips.append(ImageClip(last_frame.copy()).with_duration(seg_dur).with_fps(fps))
-                    else:
-                        clips.append(ImageClip(black_frame).with_duration(seg_dur).with_fps(fps))
 
                 song_pos += dur
 
