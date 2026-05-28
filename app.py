@@ -1,10 +1,13 @@
 import os
+import re
 import threading
 import tempfile
 import subprocess
+from collections import defaultdict
+from difflib import SequenceMatcher
+
 import numpy as np
 import soundfile as sf
-from scipy.signal import resample, butter, filtfilt
 import imageio_ffmpeg
 from flask import Flask, render_template, request, jsonify, send_file
 
@@ -12,6 +15,7 @@ FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 os.environ['IMAGEIO_FFMPEG_EXE'] = FFMPEG
 
 from moviepy import VideoFileClip, AudioFileClip, ImageClip, concatenate_videoclips
+from faster_whisper import WhisperModel
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 600 * 1024 * 1024
@@ -25,202 +29,255 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 job = {'status': 'idle', 'message': 'Ready.', 'percent': 0, 'output': None, 'segments': 0}
 job_lock = threading.Lock()
 
+_whisper_model = None
+_whisper_lock = threading.Lock()
+
+
+def get_whisper(model_name='base'):
+    """Lazy-load Whisper. Cached for the process lifetime."""
+    global _whisper_model
+    with _whisper_lock:
+        if _whisper_model is None:
+            _whisper_model = WhisperModel(model_name, device='cpu', compute_type='int8')
+        return _whisper_model
+
 
 def upd(**kwargs):
     with job_lock:
         job.update(kwargs)
 
 
-def load_audio_ffmpeg(src_path, sr=8000):
-    """Decode any audio/video source to a float32 mono array at target SR."""
+def normalize_word(w):
+    return re.sub(r'[^\w]', '', str(w).strip().lower())
+
+
+def transcode_to_wav16(src_path):
+    """Whisper expects 16kHz mono."""
     tmp = tempfile.mktemp(suffix='.wav')
     subprocess.run(
-        [FFMPEG, '-y', '-i', src_path, '-ar', str(sr), '-ac', '1', '-f', 'wav', tmp],
+        [FFMPEG, '-y', '-i', src_path, '-ar', '16000', '-ac', '1', '-f', 'wav', tmp],
         capture_output=True, check=True
     )
-    data, _ = sf.read(tmp, dtype='float32', always_2d=False)
-    os.unlink(tmp)
-    return data
+    return tmp
 
 
-def bandpass_voice(audio, sr):
-    """300–3400 Hz bandpass — strips beats/music so correlation locks onto voice only."""
-    nyq = sr / 2.0
-    b, a = butter(4, [300 / nyq, min(3400 / nyq, 0.99)], btype='band')
-    return filtfilt(b, a, audio).astype(np.float32)
+def transcribe_words(model, audio_path):
+    """Run Whisper and return a flat list of word-level dicts."""
+    segments, _info = model.transcribe(
+        audio_path,
+        word_timestamps=True,
+        vad_filter=True,
+        language='en',
+        beam_size=5,
+    )
+    words = []
+    for seg in segments:
+        for w in (seg.words or []):
+            norm = normalize_word(w.word)
+            if not norm:
+                continue
+            words.append({
+                'word': w.word.strip(),
+                'norm': norm,
+                'start': float(w.start),
+                'end': float(w.end),
+            })
+    return words
 
 
-SPEED_RATES = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30]
+def best_fuzzy_match(target, candidates_by_norm, min_score=0.72):
+    """Return (norm_key, candidate_list) for the closest spelling match, or None."""
+    best = None
+    best_score = min_score
+    for norm_key in candidates_by_norm:
+        score = SequenceMatcher(None, target, norm_key).ratio()
+        if score > best_score:
+            best_score = score
+            best = norm_key
+    if best is None:
+        return None
+    return best, candidates_by_norm[best]
 
 
-def detect_speed(query, orig_n, rough_orig_idx, window_samples, SR):
-    best_rate = 1.0
-    best_score = -1.0
-    search_start = max(0, rough_orig_idx - window_samples)
-    search_end = min(len(orig_n), rough_orig_idx + 2 * window_samples)
-    local = orig_n[search_start:search_end]
-    for rate in SPEED_RATES:
-        target_len = max(8, int(len(query) / rate))
-        q_resampled = resample(query, target_len).astype(np.float32)
-        if len(q_resampled) > len(local):
-            continue
-        corr = np.correlate(local, q_resampled, mode='valid')
-        if len(corr) == 0:
-            continue
-        sc = float(corr.max()) / len(q_resampled)
-        if sc > best_score:
-            best_score = sc
-            best_rate = rate
-    return best_rate
-
-
-def process(song_path, video_path, gap_mode, sensitivity):
+def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
     try:
-        SR = 8000
-        WINDOW_SEC = 0.5          # each window = exactly one output clip
-        window_samples = int(WINDOW_SEC * SR)
-        SILENCE_THRESH = 0.015    # raw RMS below this = silence/beat, no match attempt
+        upd(status='processing', message='Loading Whisper model...', percent=4)
+        model = get_whisper(model_name)
 
-        upd(status='processing', message='Loading song audio...', percent=5)
-        song = load_audio_ffmpeg(song_path, SR)
+        upd(message='Transcoding audio for transcription...', percent=8)
+        song_wav = transcode_to_wav16(song_path)
+        orig_wav = transcode_to_wav16(video_path)
 
-        upd(message='Extracting original video audio...', percent=12)
-        orig = load_audio_ffmpeg(video_path, SR)
+        upd(message='Transcribing song (Whisper)...', percent=14)
+        song_words = transcribe_words(model, song_wav)
 
-        upd(message='Filtering to speech band (300–3400 Hz)...', percent=18)
-        song_filt = bandpass_voice(song, SR)
-        orig_filt = bandpass_voice(orig, SR)
+        upd(message='Transcribing original video (Whisper)...', percent=40)
+        orig_words = transcribe_words(model, orig_wav)
 
-        upd(message='Building fingerprint...', percent=22)
+        os.unlink(song_wav)
+        os.unlink(orig_wav)
 
-        song_rms = np.sqrt(np.mean(song_filt ** 2)) + 1e-8
-        orig_rms = np.sqrt(np.mean(orig_filt ** 2)) + 1e-8
-        song_n = (song_filt / song_rms).astype(np.float32)
-        orig_n = (orig_filt / orig_rms).astype(np.float32)
+        if not song_words:
+            upd(status='error', message='Whisper found no words in the song.')
+            return
+        if not orig_words:
+            upd(status='error', message='Whisper found no words in the original video.')
+            return
 
-        n_fft = 1
-        while n_fft < len(orig_n) + window_samples:
-            n_fft <<= 1
+        upd(message=f'Indexing {len(orig_words)} source words...', percent=68)
 
-        orig_padded = np.zeros(n_fft, dtype=np.float32)
-        orig_padded[:len(orig_n)] = orig_n
-        orig_fft = np.fft.rfft(orig_padded)
+        # Index original words by normalized form
+        orig_index = defaultdict(list)
+        for ow in orig_words:
+            orig_index[ow['norm']].append(ow)
 
-        upd(message='Matching clips to original...', percent=32)
+        upd(message=f'Matching {len(song_words)} song words to source...', percent=72)
 
-        # Non-overlapping windows: each window becomes exactly one output clip
-        n_windows = len(song_n) // window_samples
-        matches = []
+        # Get song duration from the audio file directly so we can fill trailing gap
+        data, sr = sf.read(song_path, dtype='float32', always_2d=False)
+        if data.ndim > 1:
+            data = data[:, 0]
+        song_duration = len(data) / sr
 
-        for i in range(n_windows):
-            s = i * window_samples
-            e = s + window_samples
-            query = song_n[s:e]
+        # Pick best instance for each song word — prefer least-used so we
+        # don't repeat the same source frame for repeated song words.
+        used_count = defaultdict(int)
+        matched = 0
+        fuzzy = 0
+        unmatched = 0
 
-            # Silence check on raw (unfiltered) audio
-            raw_rms = float(np.sqrt(np.mean(song[s:e] ** 2)))
+        timeline = []
+        song_pos = 0.0
 
-            if raw_rms < SILENCE_THRESH:
-                matches.append({'song_time': s / SR, 'silent': True, 'score': 0.0, 'query': query})
-            else:
-                q_padded = np.zeros(n_fft, dtype=np.float32)
-                q_padded[:len(query)] = query[::-1]
-                q_fft = np.fft.rfft(q_padded)
-
-                corr = np.fft.irfft(orig_fft * q_fft)[:len(orig_n)]
-                best_idx = int(np.argmax(corr))
-                score = float(corr[best_idx]) / window_samples
-                orig_start_sample = max(0, best_idx - window_samples + 1)
-
-                matches.append({
-                    'song_time': s / SR,
-                    'orig_time': orig_start_sample / SR,
-                    'orig_idx': orig_start_sample,
-                    'score': score,
-                    'query': query,
-                    'silent': False,
+        for sw in song_words:
+            # Fill any gap (silence/beats) preceding this word
+            if sw['start'] > song_pos + 0.02:
+                timeline.append({
+                    'type': 'gap',
+                    'duration': sw['start'] - song_pos,
                 })
 
-            if i % 20 == 0:
-                pct = 32 + int(40 * i / n_windows)
-                upd(message=f'Matching... {i + 1}/{n_windows} clips', percent=pct)
+            song_dur = max(0.05, sw['end'] - sw['start'])
+            norm = sw['norm']
 
-        upd(message='Setting threshold...', percent=74)
+            # 1. Exact match
+            candidates = orig_index.get(norm)
+            match_key = norm if candidates else None
 
-        voice_scores = [m['score'] for m in matches if not m['silent']]
-        if voice_scores:
-            score_arr = np.array(voice_scores)
-            score_median = float(np.median(score_arr))
-            score_max = float(score_arr.max())
-            threshold = score_median + sensitivity * (score_max - score_median)
-        else:
-            threshold = 0.0
+            # 2. Fuzzy fallback
+            is_fuzzy = False
+            if not candidates:
+                fuzzy_result = best_fuzzy_match(norm, orig_index)
+                if fuzzy_result:
+                    match_key, candidates = fuzzy_result
+                    is_fuzzy = True
 
-        upd(message='Detecting clip speeds...', percent=76)
-        for m in matches:
-            if not m['silent'] and m['score'] >= threshold:
-                m['speed'] = detect_speed(m['query'], orig_n, m['orig_idx'], window_samples, SR)
+            if candidates:
+                idx = used_count[match_key] % len(candidates)
+                ow = candidates[idx]
+                used_count[match_key] += 1
+                timeline.append({
+                    'type': 'cut',
+                    'word': sw['word'],
+                    'song_dur': song_dur,
+                    'orig_time': ow['start'],
+                    'orig_dur': max(0.05, ow['end'] - ow['start']),
+                    'fuzzy': is_fuzzy,
+                })
+                if is_fuzzy:
+                    fuzzy += 1
+                else:
+                    matched += 1
             else:
-                m['speed'] = 1.0
+                timeline.append({
+                    'type': 'unmatched',
+                    'word': sw['word'],
+                    'duration': song_dur,
+                })
+                unmatched += 1
 
-        upd(message='Building clip sequence...', percent=80)
+            song_pos = sw['end']
+
+        # Trailing gap (if song continues after last word)
+        if song_pos < song_duration - 0.02:
+            timeline.append({'type': 'gap', 'duration': song_duration - song_pos})
+
+        upd(
+            message=f'Cutting timeline: {matched} matches, {fuzzy} fuzzy, {unmatched} unmatched...',
+            percent=78,
+            segments=matched + fuzzy,
+        )
 
         video_clip = VideoFileClip(video_path)
         fps = video_clip.fps
         video_duration = video_clip.duration
-
-        clips = []
-        matched_count = 0
         black_frame = np.zeros((int(video_clip.h), int(video_clip.w), 3), dtype=np.uint8)
         last_frame = video_clip.get_frame(0)
 
-        for m in matches:
-            is_match = not m['silent'] and m['score'] >= threshold
+        clips = []
+        for item in timeline:
+            if item['type'] == 'cut':
+                target_dur = item['song_dur']
+                o_start = max(0.0, min(item['orig_time'], video_duration - 0.05))
+                o_end_raw = min(o_start + item['orig_dur'], video_duration)
+                if o_end_raw - o_start < 0.04:
+                    o_end_raw = min(o_start + 0.06, video_duration)
+                source_dur = o_end_raw - o_start
 
-            if not is_match:
-                if gap_mode == 'freeze':
-                    clips.append(ImageClip(last_frame.copy()).with_duration(WINDOW_SEC).with_fps(fps))
-                else:
-                    clips.append(ImageClip(black_frame).with_duration(WINDOW_SEC).with_fps(fps))
-            else:
-                speed = m.get('speed', 1.0)
-                raw_dur = WINDOW_SEC * speed
-                o_start = max(0.0, min(m['orig_time'], video_duration - 0.1))
-                o_end = max(o_start + 0.05, min(o_start + raw_dur, video_duration))
+                vc = video_clip.subclipped(o_start, o_end_raw)
 
-                vc = video_clip.subclipped(o_start, o_end)
-                if abs(speed - 1.0) > 0.03:
+                # Time-stretch: songs often speed up or slow down speech, so the
+                # song-word duration ≠ source-word duration. We stretch the
+                # source clip to match the song timing. speed = source/target;
+                # speed > 1 plays faster (compressed), speed < 1 plays slower.
+                if abs(source_dur - target_dur) > 0.015:
+                    speed = source_dur / target_dur
+                    speed = max(0.25, min(4.0, speed))
                     vc = vc.with_speed_scaled(speed)
-                vc = vc.with_duration(WINDOW_SEC)
+                vc = vc.with_duration(target_dur)
                 clips.append(vc)
-
-                last_frame = video_clip.get_frame(min(o_end, video_duration - 0.05))
-                matched_count += 1
+                last_frame = video_clip.get_frame(min(o_end_raw - 0.01, video_duration - 0.05))
+            else:
+                dur = item.get('duration', 0)
+                if dur < 0.02:
+                    continue
+                if gap_mode == 'freeze':
+                    clips.append(ImageClip(last_frame.copy()).with_duration(dur).with_fps(fps))
+                else:
+                    clips.append(ImageClip(black_frame).with_duration(dur).with_fps(fps))
 
         if not clips:
-            upd(status='error', message='No clips assembled. Try lowering sensitivity.')
+            upd(status='error', message='No clips assembled.')
             video_clip.close()
             return
 
-        upd(
-            message=f'Rendering {len(clips)} clips ({matched_count} matched)...',
-            percent=90,
-            segments=matched_count,
-        )
+        upd(message=f'Rendering ({matched + fuzzy} word cuts)...', percent=90, segments=matched + fuzzy)
 
         final = concatenate_videoclips(clips, method='compose')
         audio_clip = AudioFileClip(song_path)
-        song_dur = len(song) / SR
-        safe_end = min(song_dur, final.duration, audio_clip.duration) - 0.001
+        safe_end = min(song_duration, final.duration, audio_clip.duration) - 0.001
         final = final.with_audio(audio_clip.subclipped(0, max(0, safe_end)))
 
         output_path = os.path.join(OUTPUT_DIR, 'music_video.mp4')
-        final.write_videofile(output_path, fps=fps, codec='libx264', audio_codec='aac', logger=None)
+        final.write_videofile(
+            output_path,
+            fps=fps,
+            codec='libx264',
+            audio_codec='aac',
+            preset='medium',
+            ffmpeg_params=['-pix_fmt', 'yuv420p'],
+            logger=None,
+        )
 
         video_clip.close()
         final.close()
 
-        upd(status='done', message=f'Done! {matched_count} voice clips cut and synced.', percent=100, output=output_path)
+        upd(
+            status='done',
+            message=f'Done! {matched} exact + {fuzzy} fuzzy word cuts ({unmatched} unmatched).',
+            percent=100,
+            output=output_path,
+        )
 
     except Exception as e:
         import traceback
@@ -242,6 +299,7 @@ def start_process():
     video_file = request.files.get('video')
     gap_mode = request.form.get('gap_mode', 'black')
     sensitivity = float(request.form.get('sensitivity', '0.25'))
+    model_name = request.form.get('model', 'base')
 
     if not song_file or not video_file:
         return jsonify({'error': 'Both song and video are required'}), 400
@@ -252,7 +310,11 @@ def start_process():
     video_file.save(video_path)
 
     upd(status='processing', message='Starting...', percent=0, output=None, segments=0)
-    threading.Thread(target=process, args=(song_path, video_path, gap_mode, sensitivity), daemon=True).start()
+    threading.Thread(
+        target=process,
+        args=(song_path, video_path, gap_mode, sensitivity, model_name),
+        daemon=True,
+    ).start()
     return jsonify({'ok': True})
 
 
