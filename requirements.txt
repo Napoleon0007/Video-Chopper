@@ -1,0 +1,6 @@
+flask
+numpy
+soundfile
+scipy
+imageio-ffmpeg
+moviepy==2.1.2

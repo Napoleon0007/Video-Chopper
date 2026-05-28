@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Chopper</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d0d0d;
+      color: #e8e8e8;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 24px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #fff;
+    }
+
+    header p {
+      margin-top: 8px;
+      color: #666;
+      font-size: 0.9rem;
+    }
+
+    .card {
+      background: #161616;
+      border: 1px solid #222;
+      border-radius: 16px;
+      padding: 32px;
+      width: 100%;
+      max-width: 680px;
+    }
+
+    .drop-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .drop-zone {
+      border: 2px dashed #2a2a2a;
+      border-radius: 12px;
+      padding: 28px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      position: relative;
+    }
+
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: #4a9eff;
+      background: rgba(74, 158, 255, 0.05);
+    }
+
+    .drop-zone.has-file {
+      border-color: #34c97a;
+      border-style: solid;
+    }
+
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    .drop-icon {
+      font-size: 2rem;
+      margin-bottom: 10px;
+    }
+
+    .drop-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #999;
+      margin-bottom: 6px;
+    }
+
+    .drop-hint {
+      font-size: 0.75rem;
+      color: #444;
+    }
+
+    .drop-filename {
+      font-size: 0.78rem;
+      color: #34c97a;
+      margin-top: 6px;
+      word-break: break-all;
+    }
+
+    .options-row {
+      display: flex;
+      gap: 24px;
+      align-items: flex-end;
+      margin-bottom: 24px;
+    }
+
+    .option-group {
+      flex: 1;
+    }
+
+    .option-group label {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #666;
+      margin-bottom: 10px;
+    }
+
+    .toggle-buttons {
+      display: flex;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .toggle-btn {
+      flex: 1;
+      padding: 9px 12px;
+      background: transparent;
+      border: none;
+      color: #666;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .toggle-btn.active {
+      background: #222;
+      color: #fff;
+    }
+
+    .slider-wrap {
+      position: relative;
+    }
+
+    .slider-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.7rem;
+      color: #444;
+      margin-bottom: 6px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #4a9eff;
+      cursor: pointer;
+    }
+
+    .process-btn {
+      width: 100%;
+      padding: 16px;
+      background: #4a9eff;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+      margin-bottom: 24px;
+    }
+
+    .process-btn:hover:not(:disabled) {
+      background: #3a8ef0;
+    }
+
+    .process-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .progress-section {
+      display: none;
+    }
+
+    .progress-section.visible {
+      display: block;
+    }
+
+    .progress-bar-bg {
+      background: #1e1e1e;
+      border-radius: 99px;
+      height: 6px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: #4a9eff;
+      border-radius: 99px;
+      transition: width 0.4s ease;
+      width: 0%;
+    }
+
+    .progress-bar-fill.done {
+      background: #34c97a;
+    }
+
+    .progress-bar-fill.error {
+      background: #e05454;
+    }
+
+    .status-msg {
+      font-size: 0.82rem;
+      color: #888;
+      min-height: 18px;
+    }
+
+    .status-msg.error {
+      color: #e05454;
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 0.75rem;
+      background: #1a1010;
+      border-radius: 8px;
+      padding: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .download-btn {
+      display: none;
+      width: 100%;
+      padding: 14px;
+      background: #34c97a;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: center;
+      text-decoration: none;
+      margin-top: 16px;
+      transition: background 0.2s;
+    }
+
+    .download-btn:hover { background: #28b56a; }
+    .download-btn.visible { display: block; }
+
+    .segments-badge {
+      display: inline-block;
+      background: #1e2a1e;
+      color: #34c97a;
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-left: 10px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Video Chopper</h1>
+  <p>Auto-sync mouth clips from original footage to your song</p>
+</header>
+
+<div class="card">
+
+  <div class="drop-row">
+    <div class="drop-zone" id="songZone">
+      <input type="file" id="songFile" accept=".wav,.mp3,.aiff,.flac,.ogg">
+      <div class="drop-icon">🎵</div>
+      <div class="drop-label">Song</div>
+      <div class="drop-hint">WAV, MP3, AIFF</div>
+      <div class="drop-filename" id="songName"></div>
+    </div>
+
+    <div class="drop-zone" id="videoZone">
+      <input type="file" id="videoFile" accept=".mp4,.mov,.avi,.mkv,.webm">
+      <div class="drop-icon">🎬</div>
+      <div class="drop-label">Original Video</div>
+      <div class="drop-hint">MP4, MOV, AVI</div>
+      <div class="drop-filename" id="videoName"></div>
+    </div>
+  </div>
+
+  <div class="options-row">
+    <div class="option-group">
+      <label>Gap Mode</label>
+      <div class="toggle-buttons">
+        <button class="toggle-btn" data-mode="freeze" onclick="setGapMode(this)">Freeze Frame</button>
+        <button class="toggle-btn active" data-mode="black" onclick="setGapMode(this)">Black Screen</button>
+      </div>
+    </div>
+
+    <div class="option-group">
+      <label>Sensitivity <span id="sensitivityVal">25%</span></label>
+      <div class="slider-wrap">
+        <div class="slider-labels"><span>Strict</span><span>Loose</span></div>
+        <input type="range" id="sensitivity" min="5" max="50" value="25"
+               oninput="document.getElementById('sensitivityVal').textContent = this.value + '%'">
+      </div>
+    </div>
+  </div>
+
+  <button class="process-btn" id="processBtn" onclick="startProcess()" disabled>
+    Process
+  </button>
+
+  <div class="progress-section" id="progressSection">
+    <div class="progress-bar-bg">
+      <div class="progress-bar-fill" id="progressFill"></div>
+    </div>
+    <div class="status-msg" id="statusMsg">Starting...</div>
+    <a class="download-btn" id="downloadBtn" href="/download" download="music_video.mp4">
+      Download Music Video
+    </a>
+  </div>
+
+</div>
+
+<script>
+  let gapMode = 'black';
+  let songFileObj = null;
+  let videoFileObj = null;
+  let polling = null;
+
+  function setGapMode(btn) {
+    document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    gapMode = btn.dataset.mode;
+  }
+
+  function onFileChange(inputId, zoneId, nameId, fileType) {
+    const input = document.getElementById(inputId);
+    const zone = document.getElementById(zoneId);
+    const nameEl = document.getElementById(nameId);
+    input.addEventListener('change', function () {
+      const file = this.files[0];
+      if (!file) return;
+      if (fileType === 'song') songFileObj = file;
+      else videoFileObj = file;
+      nameEl.textContent = file.name;
+      zone.classList.add('has-file');
+      checkReady();
+    });
+  }
+
+  function checkReady() {
+    document.getElementById('processBtn').disabled = !(songFileObj && videoFileObj);
+  }
+
+  onFileChange('songFile', 'songZone', 'songName', 'song');
+  onFileChange('videoFile', 'videoZone', 'videoName', 'video');
+
+  function dragEvents(zoneId, inputId, fileType, nameId) {
+    const zone = document.getElementById(zoneId);
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (!file) return;
+      if (fileType === 'song') songFileObj = file;
+      else videoFileObj = file;
+      document.getElementById(nameId).textContent = file.name;
+      zone.classList.add('has-file');
+      checkReady();
+    });
+  }
+
+  dragEvents('songZone', 'songFile', 'song', 'songName');
+  dragEvents('videoZone', 'videoFile', 'video', 'videoName');
+
+  async function startProcess() {
+    const btn = document.getElementById('processBtn');
+    const section = document.getElementById('progressSection');
+    const fill = document.getElementById('progressFill');
+    const msg = document.getElementById('statusMsg');
+    const dlBtn = document.getElementById('downloadBtn');
+
+    btn.disabled = true;
+    section.classList.add('visible');
+    fill.className = 'progress-bar-fill';
+    fill.style.width = '0%';
+    msg.className = 'status-msg';
+    msg.textContent = 'Uploading files...';
+    dlBtn.classList.remove('visible');
+
+    const form = new FormData();
+    form.append('song', songFileObj);
+    form.append('video', videoFileObj);
+    form.append('gap_mode', gapMode);
+    form.append('sensitivity', (document.getElementById('sensitivity').value / 100).toFixed(2));
+
+    try {
+      const res = await fetch('/process', { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.error) {
+        msg.className = 'status-msg error';
+        msg.textContent = data.error;
+        btn.disabled = false;
+        return;
+      }
+    } catch (e) {
+      msg.className = 'status-msg error';
+      msg.textContent = 'Upload failed: ' + e.message;
+      btn.disabled = false;
+      return;
+    }
+
+    polling = setInterval(pollStatus, 600);
+  }
+
+  async function pollStatus() {
+    try {
+      const res = await fetch('/status');
+      const data = await res.json();
+      const fill = document.getElementById('progressFill');
+      const msg = document.getElementById('statusMsg');
+      const dlBtn = document.getElementById('downloadBtn');
+      const btn = document.getElementById('processBtn');
+
+      fill.style.width = data.percent + '%';
+
+      let label = data.message;
+      if (data.segments > 0) label += ` <span class="segments-badge">${data.segments} clips</span>`;
+
+      if (data.status === 'done') {
+        clearInterval(polling);
+        fill.classList.add('done');
+        msg.innerHTML = label;
+        dlBtn.classList.add('visible');
+        btn.disabled = false;
+      } else if (data.status === 'error') {
+        clearInterval(polling);
+        fill.classList.add('error');
+        msg.className = 'status-msg error';
+        msg.textContent = data.message;
+        btn.disabled = false;
+      } else {
+        msg.innerHTML = label;
+      }
+    } catch (e) {
+      // network blip, keep polling
+    }
+  }
+</script>
+
+</body>
+</html>
