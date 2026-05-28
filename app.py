@@ -259,13 +259,22 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
         final = final.with_audio(audio_clip.subclipped(0, max(0, safe_end)))
 
         output_path = os.path.join(OUTPUT_DIR, 'music_video.mp4')
+        # Compressed output: CRF 28 (smaller, still good quality), slow preset
+        # (better compression efficiency), 96k AAC, faststart for streaming.
         final.write_videofile(
             output_path,
             fps=fps,
             codec='libx264',
             audio_codec='aac',
-            preset='medium',
-            ffmpeg_params=['-pix_fmt', 'yuv420p'],
+            audio_bitrate='96k',
+            preset='slow',
+            ffmpeg_params=[
+                '-pix_fmt', 'yuv420p',
+                '-crf', '28',
+                '-movflags', '+faststart',
+                '-profile:v', 'high',
+                '-level', '4.0',
+            ],
             logger=None,
         )
 
