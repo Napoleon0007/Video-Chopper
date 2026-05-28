@@ -644,14 +644,6 @@
           <div class="dz-hint has" id="videoName" style="display:none"></div>
         </div>
 
-        <div class="drop-zone" id="brollZone">
-          <input type="file" id="brollFile" accept=".mp4,.mov,.avi,.mkv,.webm" multiple>
-          <div class="dz-type">B-Roll / Fillers (optional, multi)</div>
-          <div class="dz-ring">◇</div>
-          <div class="dz-hint" id="brollHint">Random snippets fill gaps · cut on the BPM · audio stripped</div>
-          <div class="dz-hint has" id="brollName" style="display:none"></div>
-        </div>
-
       </div>
     </div>
 
@@ -899,7 +891,7 @@
   let gapMode = 'black';
   let songFile = null;
   let videoFile = null;
-  let brollFiles = [];
+  let brollFiles = [];                  // kept empty; B-roll UI removed
   let poll = null;
 
   function setGap(btn) {
@@ -940,35 +932,6 @@
 
   bindFile('songFile',  'songZone',  'songHint',  'songName',  'song');
   bindFile('videoFile', 'videoZone', 'videoHint', 'videoName', 'video');
-
-  function bindMulti(inputId, zoneId, hintId, nameId) {
-    const input = document.getElementById(inputId);
-    const hint = document.getElementById(hintId);
-    const name = document.getElementById(nameId);
-    const zone = document.getElementById(zoneId);
-    function setFiles(list) {
-      brollFiles = Array.from(list || []);
-      if (brollFiles.length) {
-        hint.style.display = 'none';
-        name.textContent = '> ' + brollFiles.length + ' file' + (brollFiles.length > 1 ? 's' : '') + ' loaded';
-        name.style.display = 'block';
-        zone.classList.add('has-file');
-      } else {
-        hint.style.display = 'block';
-        name.style.display = 'none';
-        zone.classList.remove('has-file');
-      }
-    }
-    input.addEventListener('change', function () { setFiles(this.files); });
-    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
-    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-    zone.addEventListener('drop', e => {
-      e.preventDefault();
-      zone.classList.remove('drag-over');
-      setFiles(e.dataTransfer.files);
-    });
-  }
-  bindMulti('brollFile', 'brollZone', 'brollHint', 'brollName');
 
   function checkReady() {
     document.getElementById('processBtn').disabled = !(songFile && videoFile);
