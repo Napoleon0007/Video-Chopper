@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import random
 import hashlib
 import threading
 import tempfile
@@ -91,6 +92,73 @@ def transcode_to_wav16(src_path):
         capture_output=True, check=True
     )
     return tmp
+
+
+def estimate_bpm_and_beats(audio_path, min_bpm=70, max_bpm=180):
+    """Onset-envelope based tempo + uniform beat grid.
+
+    Returns (bpm, beat_times). Good enough for stable-tempo electronic / hip-hop
+    music; less reliable on tempo-shifting tracks.
+    """
+    data, sr = sf.read(audio_path, dtype='float32', always_2d=False)
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    if len(data) < sr:
+        return 120.0, []
+
+    # Onset strength: positive derivative of log-energy in ~10ms frames
+    hop_ms = 10
+    hop = int(sr * hop_ms / 1000)
+    frame = int(sr * 25 / 1000)
+    n = max(0, (len(data) - frame) // hop)
+    rms = np.zeros(n, dtype=np.float32)
+    for i in range(n):
+        s = i * hop
+        rms[i] = np.sqrt(np.mean(data[s:s + frame] ** 2))
+    log_rms = np.log1p(rms * 100.0)
+    onset = np.maximum(np.diff(log_rms, prepend=log_rms[0]), 0)
+
+    if onset.max() < 1e-6:
+        return 120.0, []
+
+    # Autocorrelate onset envelope to find dominant period (= beat period)
+    frames_per_sec = 1000.0 / hop_ms
+    min_lag = int(frames_per_sec * 60.0 / max_bpm)
+    max_lag = int(frames_per_sec * 60.0 / min_bpm)
+
+    onset_centered = onset - onset.mean()
+    ac = np.correlate(onset_centered, onset_centered, mode='full')
+    ac = ac[len(ac) // 2:]                # only positive lags
+    ac = ac[:max_lag + 1]
+    if len(ac) <= min_lag:
+        return 120.0, []
+
+    # Best lag in BPM range
+    best_lag = int(np.argmax(ac[min_lag:max_lag + 1])) + min_lag
+    bpm = 60.0 * frames_per_sec / best_lag
+
+    # Anchor: first onset above the 80th percentile
+    threshold = float(np.percentile(onset, 80))
+    anchor_frame = 0
+    for i, v in enumerate(onset):
+        if v > threshold:
+            anchor_frame = i
+            break
+    anchor_time = anchor_frame * hop_ms / 1000.0
+    beat_period = 60.0 / bpm
+
+    # Walk backward to the first beat at/after t=0, then forward to end
+    duration = len(data) / sr
+    while anchor_time - beat_period >= 0:
+        anchor_time -= beat_period
+    beats = []
+    t = anchor_time
+    while t < duration:
+        if t >= 0:
+            beats.append(round(t, 4))
+        t += beat_period
+
+    return round(bpm, 1), beats
 
 
 WHISPER_KWARGS = dict(
@@ -189,7 +257,8 @@ def best_fuzzy_match(target, candidates_by_norm, min_score=0.72):
     return best, candidates_by_norm[best]
 
 
-def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
+def process(song_path, video_path, gap_mode, sensitivity, model_name='base', broll_paths=None):
+    broll_paths = broll_paths or []
     try:
         upd(status='processing', message='Loading Whisper model...', percent=4)
         model = get_whisper(model_name)
@@ -198,7 +267,10 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
         song_wav = transcode_to_wav16(song_path)
         orig_wav = transcode_to_wav16(video_path)
 
-        upd(message='Transcribing song (chunked)...', percent=14)
+        upd(message='Detecting BPM and beat grid...', percent=11)
+        bpm, beat_times = estimate_bpm_and_beats(song_wav)
+
+        upd(message=f'Transcribing song ({bpm:.0f} BPM, chunked)...', percent=14)
         # Chunk only the song — the chopped/repetitive content is what causes
         # Whisper to bail early. The source video is continuous speech and
         # transcribes fine in one pass.
@@ -325,10 +397,28 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
         video_clip = VideoFileClip(video_path)
         fps = video_clip.fps
         video_duration = video_clip.duration
-        black_frame = np.zeros((int(video_clip.h), int(video_clip.w), 3), dtype=np.uint8)
+        target_w = int(video_clip.w)
+        target_h = int(video_clip.h)
+        black_frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
         last_frame = video_clip.get_frame(0)
 
+        # Load B-roll clips once and reuse
+        broll_clips = []
+        for p in broll_paths:
+            try:
+                bc = VideoFileClip(p)
+                if bc.duration and bc.duration > 0.2:
+                    broll_clips.append(bc)
+            except Exception:
+                continue
+
+        beat_period = (60.0 / bpm) if bpm else 0.5
+
+        # song_pos tracks the running output time so we know which beat
+        # boundaries land inside the current gap.
+        song_pos = 0.0
         clips = []
+
         for item in timeline:
             if item['type'] == 'cut':
                 target_dur = item['song_dur']
@@ -340,10 +430,6 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
 
                 vc = video_clip.subclipped(o_start, o_end_raw)
 
-                # Time-stretch: songs often speed up or slow down speech, so the
-                # song-word duration ≠ source-word duration. We stretch the
-                # source clip to match the song timing. speed = source/target;
-                # speed > 1 plays faster (compressed), speed < 1 plays slower.
                 if abs(source_dur - target_dur) > 0.015:
                     speed = source_dur / target_dur
                     speed = max(0.25, min(4.0, speed))
@@ -351,14 +437,49 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
                 vc = vc.with_duration(target_dur)
                 clips.append(vc)
                 last_frame = video_clip.get_frame(min(o_end_raw - 0.01, video_duration - 0.05))
+                song_pos += target_dur
             else:
                 dur = item.get('duration', 0)
                 if dur < 0.02:
                     continue
-                if gap_mode == 'freeze':
+                gap_start = song_pos
+                gap_end = song_pos + dur
+
+                if broll_clips:
+                    # Cut on the beat: split the gap at every beat boundary
+                    # inside it. Each sub-segment becomes one random B-roll
+                    # snippet, so cuts always land on the BPM.
+                    splits = [gap_start]
+                    for b in beat_times:
+                        if gap_start + 0.08 < b < gap_end - 0.08:
+                            splits.append(b)
+                    splits.append(gap_end)
+                    # Merge tiny segments (< half a beat) with neighbours
+                    min_seg = max(0.12, beat_period * 0.5)
+                    cleaned = [splits[0]]
+                    for s in splits[1:]:
+                        if s - cleaned[-1] >= min_seg:
+                            cleaned.append(s)
+                    if len(cleaned) < 2 or cleaned[-1] < gap_end:
+                        cleaned[-1] = gap_end
+
+                    for i in range(len(cleaned) - 1):
+                        seg_dur = cleaned[i + 1] - cleaned[i]
+                        if seg_dur < 0.05:
+                            continue
+                        broll = random.choice(broll_clips)
+                        max_start = max(0.0, broll.duration - seg_dur - 0.05)
+                        start = random.uniform(0.0, max_start) if max_start > 0.1 else 0.0
+                        bc = broll.subclipped(start, start + seg_dur)
+                        bc = bc.resized(new_size=(target_w, target_h))
+                        bc = bc.without_audio().with_duration(seg_dur).with_fps(fps)
+                        clips.append(bc)
+                elif gap_mode == 'freeze':
                     clips.append(ImageClip(last_frame.copy()).with_duration(dur).with_fps(fps))
                 else:
                     clips.append(ImageClip(black_frame).with_duration(dur).with_fps(fps))
+
+                song_pos += dur
 
         if not clips:
             upd(status='error', message='No clips assembled.')
@@ -395,9 +516,16 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
         video_clip.close()
         final.close()
 
+        for bc in broll_clips:
+            try:
+                bc.close()
+            except Exception:
+                pass
+
+        broll_note = f' + {len(broll_clips)} B-roll on beat ({bpm:.0f} BPM)' if broll_clips else ''
         upd(
             status='done',
-            message=f'Done! {matched} exact + {fuzzy} fuzzy word cuts ({unmatched} unmatched).',
+            message=f'Done! {matched} exact + {fuzzy} fuzzy word cuts ({unmatched} unmatched){broll_note}.',
             percent=100,
             output=output_path,
         )
@@ -423,6 +551,7 @@ def start_process():
     gap_mode = request.form.get('gap_mode', 'black')
     sensitivity = float(request.form.get('sensitivity', '0.25'))
     model_name = request.form.get('model', 'base')
+    broll_files = request.files.getlist('broll')
 
     if not song_file or not video_file:
         return jsonify({'error': 'Both song and video are required'}), 400
@@ -432,10 +561,19 @@ def start_process():
     song_file.save(song_path)
     video_file.save(video_path)
 
+    broll_paths = []
+    for i, bf in enumerate(broll_files or []):
+        if not bf or not bf.filename:
+            continue
+        ext = os.path.splitext(bf.filename)[1] or '.mp4'
+        p = os.path.join(UPLOAD_DIR, f'broll_{i}{ext}')
+        bf.save(p)
+        broll_paths.append(p)
+
     upd(status='processing', message='Starting...', percent=0, output=None, segments=0)
     threading.Thread(
         target=process,
-        args=(song_path, video_path, gap_mode, sensitivity, model_name),
+        args=(song_path, video_path, gap_mode, sensitivity, model_name, broll_paths),
         daemon=True,
     ).start()
     return jsonify({'ok': True})
