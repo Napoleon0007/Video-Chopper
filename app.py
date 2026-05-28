@@ -469,20 +469,20 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
             if item['type'] == 'cut':
                 target_dur = item['song_dur']
                 o_start = max(0.0, min(item['orig_time'], video_duration - 0.05))
-                o_end_raw = min(o_start + item['orig_dur'], video_duration)
-                if o_end_raw - o_start < 0.04:
-                    o_end_raw = min(o_start + 0.06, video_duration)
-                source_dur = o_end_raw - o_start
-
-                vc = video_clip.subclipped(o_start, o_end_raw)
-
-                if abs(source_dur - target_dur) > 0.015:
-                    speed = source_dur / target_dur
-                    speed = max(0.25, min(4.0, speed))
-                    vc = vc.with_speed_scaled(speed)
-                vc = vc.with_duration(target_dur)
+                # No time-stretching: window source for exactly the song-slot
+                # length starting at the matched word. Plays at natural speed.
+                o_end = min(o_start + target_dur, video_duration)
+                if o_end - o_start < 0.04:
+                    o_end = min(o_start + 0.05, video_duration)
+                vc = video_clip.subclipped(o_start, o_end)
                 clips.append(vc)
-                last_frame = video_clip.get_frame(min(o_end_raw - 0.01, video_duration - 0.05))
+                actual_dur = o_end - o_start
+                if actual_dur < target_dur - 0.01:
+                    # Source ran out before the slot ended — pad with black so
+                    # the song audio doesn't drift past the video.
+                    pad = target_dur - actual_dur
+                    clips.append(ImageClip(black_frame).with_duration(pad).with_fps(fps))
+                last_frame = video_clip.get_frame(min(o_end - 0.01, video_duration - 0.05))
                 song_pos += target_dur
             else:
                 dur = item.get('duration', 0)
