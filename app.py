@@ -547,7 +547,7 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
             video_clip.close()
             return
 
-        upd(message=f'Rendering ({matched + fuzzy} word cuts)...', percent=90, segments=matched + fuzzy)
+        upd(message=f'Compositing ({matched + fuzzy} word cuts)...', percent=88, segments=matched + fuzzy)
 
         final = concatenate_videoclips(clips, method='compose')
         audio_clip = AudioFileClip(song_path)
@@ -555,15 +555,36 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
         final = final.with_audio(audio_clip.subclipped(0, max(0, safe_end)))
 
         output_path = os.path.join(OUTPUT_DIR, 'music_video.mp4')
-        # Compressed output: CRF 28 (smaller, still good quality), slow preset
-        # (better compression efficiency), 96k AAC, faststart for streaming.
+
+        # Render with progress callback so the bar moves during encoding.
+        from proglog import ProgressBarLogger
+
+        total_frames = max(1, int(final.duration * fps))
+
+        class _RenderLogger(ProgressBarLogger):
+            def __init__(self):
+                super().__init__()
+                self._last_pct = 88
+
+            def bars_callback(self, bar, attr, value, old_value=None):
+                if attr != 'index':
+                    return
+                if bar == 't':
+                    pct = 88 + int(11 * value / total_frames)
+                    if pct != self._last_pct:
+                        self._last_pct = pct
+                        upd(
+                            message=f'Encoding frame {value}/{total_frames}...',
+                            percent=min(99, pct),
+                        )
+
         final.write_videofile(
             output_path,
             fps=fps,
             codec='libx264',
             audio_codec='aac',
             audio_bitrate='96k',
-            preset='medium',                  # 'slow' was 2–3× longer for ~10% extra compression — not worth it
+            preset='fast',
             ffmpeg_params=[
                 '-pix_fmt', 'yuv420p',
                 '-crf', '28',
@@ -571,7 +592,7 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base',
                 '-profile:v', 'high',
                 '-level', '4.0',
             ],
-            logger=None,
+            logger=_RenderLogger(),
         )
 
         video_clip.close()
@@ -736,5 +757,9 @@ threading.Thread(target=_warmup, daemon=True).start()
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7435))
     print(f'Video Chopper running at http://localhost:{port}')
-    # threaded=True so a long upload doesn't block /status polling
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+    try:
+        from waitress import serve
+        # threads=8 lets uploads, status polling and processing run in parallel
+        serve(app, host='0.0.0.0', port=port, threads=8, channel_timeout=3600, cleanup_interval=60)
+    except ImportError:
+        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
