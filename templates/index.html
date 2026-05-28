@@ -752,9 +752,11 @@
 
 </div><!-- /wrapper -->
 
-<script type="module">
-  // Browser-side Whisper via transformers.js. Exposed on window so the
-  // legacy non-module script below can call it.
+<script type="module-disabled">
+  // Browser-side Whisper disabled — running ONNX inference on the main
+  // thread caused "Page Unresponsive". Re-enable via a Web Worker. The
+  // server-side transcription is fast enough (~12s with cached source)
+  // now that this isn't needed.
   import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
   env.allowLocalModels = false;
   env.useBrowserCache = true;
@@ -1036,19 +1038,11 @@
     dl.classList.remove('on');
     badge.style.display = 'none';
 
-    // Stage 1: transcribe the song in the browser.
+    // Browser-side Whisper is disabled — it blocks the main thread and
+    // caused "Page Unresponsive". Server-side transcription with cached
+    // sources is fast enough (~12s end-to-end). Re-enable later via a
+    // Web Worker to keep the UI responsive.
     let songWords = null;
-    if (window.browserTranscribe) {
-      try {
-        songWords = await window.browserTranscribe(songFile, (s) => {
-          msg.textContent = '> ' + s;
-        });
-        msg.textContent = '> ' + songWords.length + ' words found in song.';
-      } catch (e) {
-        msg.textContent = '> Browser transcription failed (' + e.message + '). Server will retry.';
-        songWords = null;
-      }
-    }
 
     // Stage 2: upload files one at a time so each request stays short.
     const totalFiles = 2 + brollFiles.length;
