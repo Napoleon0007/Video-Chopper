@@ -61,15 +61,21 @@ def transcode_to_wav16(src_path):
     return tmp
 
 
+WHISPER_KWARGS = dict(
+    word_timestamps=True,
+    vad_filter=False,
+    language='en',
+    beam_size=5,
+    no_speech_threshold=0.1,
+    compression_ratio_threshold=100.0,
+    log_prob_threshold=-10.0,
+    condition_on_previous_text=False,
+)
+
+
 def transcribe_words(model, audio_path):
-    """Run Whisper and return a flat list of word-level dicts."""
-    segments, _info = model.transcribe(
-        audio_path,
-        word_timestamps=True,
-        vad_filter=True,
-        language='en',
-        beam_size=5,
-    )
+    """Run Whisper on a single file."""
+    segments, _info = model.transcribe(audio_path, **WHISPER_KWARGS)
     words = []
     for seg in segments:
         for w in (seg.words or []):
@@ -83,6 +89,58 @@ def transcribe_words(model, audio_path):
                 'end': float(w.end),
             })
     return words
+
+
+def transcribe_words_chunked(model, audio_path, chunk_sec=20.0, overlap_sec=1.5):
+    """Force full coverage by transcribing fixed-size chunks independently.
+
+    Whisper's internal bail-out (hallucination guard, no_speech) sometimes
+    abandons the tail of a file with repetitive content. Splitting into
+    chunks guarantees every section gets attempted.
+    """
+    import soundfile as sf
+    data, sr = sf.read(audio_path, dtype='float32', always_2d=False)
+    if data.ndim > 1:
+        data = data[:, 0]
+    total_sec = len(data) / sr
+
+    all_words = []
+    pos = 0.0
+    chunk_idx = 0
+    while pos < total_sec - 0.05:
+        end = min(pos + chunk_sec, total_sec)
+        s_idx = int(pos * sr)
+        e_idx = int(end * sr)
+        chunk = data[s_idx:e_idx]
+        tmp = tempfile.mktemp(suffix=f'_chunk{chunk_idx}.wav')
+        sf.write(tmp, chunk, sr)
+        try:
+            segments, _info = model.transcribe(tmp, **WHISPER_KWARGS)
+            for seg in segments:
+                for w in (seg.words or []):
+                    norm = normalize_word(w.word)
+                    if not norm:
+                        continue
+                    abs_start = float(w.start) + pos
+                    abs_end = float(w.end) + pos
+                    # Skip near-duplicates from the previous chunk's overlap
+                    if all_words and abs(all_words[-1]['start'] - abs_start) < 0.15 \
+                            and all_words[-1]['norm'] == norm:
+                        continue
+                    all_words.append({
+                        'word': w.word.strip(),
+                        'norm': norm,
+                        'start': abs_start,
+                        'end': abs_end,
+                    })
+        finally:
+            os.unlink(tmp)
+        pos = end - overlap_sec
+        chunk_idx += 1
+
+    # Keep sorted just in case
+    all_words.sort(key=lambda w: w['start'])
+    return all_words
 
 
 def best_fuzzy_match(target, candidates_by_norm, min_score=0.72):
@@ -108,11 +166,11 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
         song_wav = transcode_to_wav16(song_path)
         orig_wav = transcode_to_wav16(video_path)
 
-        upd(message='Transcribing song (Whisper)...', percent=14)
-        song_words = transcribe_words(model, song_wav)
+        upd(message='Transcribing song (Whisper, chunked)...', percent=14)
+        song_words = transcribe_words_chunked(model, song_wav)
 
-        upd(message='Transcribing original video (Whisper)...', percent=40)
-        orig_words = transcribe_words(model, orig_wav)
+        upd(message='Transcribing original video (Whisper, chunked)...', percent=40)
+        orig_words = transcribe_words_chunked(model, orig_wav)
 
         os.unlink(song_wav)
         os.unlink(orig_wav)
@@ -202,10 +260,31 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
         if song_pos < song_duration - 0.02:
             timeline.append({'type': 'gap', 'duration': song_duration - song_pos})
 
+        # Smooth: merge consecutive cuts when the source positions are adjacent.
+        # If "ANC government" was chopped intact from the original, both word-cuts
+        # become one continuous 1s clip instead of two sub-second jump cuts.
+        smoothed = []
+        for item in timeline:
+            if (
+                smoothed
+                and smoothed[-1].get('type') == 'cut'
+                and item.get('type') == 'cut'
+            ):
+                prev = smoothed[-1]
+                prev_orig_end = prev['orig_time'] + prev['orig_dur']
+                orig_gap = item['orig_time'] - prev_orig_end
+                if -0.1 <= orig_gap <= 0.25:
+                    prev['song_dur'] += item['song_dur']
+                    prev['orig_dur'] = item['orig_time'] + item['orig_dur'] - prev['orig_time']
+                    continue
+            smoothed.append(item)
+        timeline = smoothed
+
+        cut_count = sum(1 for x in timeline if x.get('type') == 'cut')
         upd(
-            message=f'Cutting timeline: {matched} matches, {fuzzy} fuzzy, {unmatched} unmatched...',
+            message=f'Cuts: {matched} matches, {fuzzy} fuzzy, {unmatched} unmatched → {cut_count} smoothed clips',
             percent=78,
-            segments=matched + fuzzy,
+            segments=cut_count,
         )
 
         video_clip = VideoFileClip(video_path)
