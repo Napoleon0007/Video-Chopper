@@ -784,35 +784,98 @@
     return rendered.getChannelData(0);
   }
 
+  function fmtSec(s) {
+    if (s < 60) return s.toFixed(0) + 's';
+    const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+    return m + 'm' + (sec < 10 ? '0' : '') + sec + 's';
+  }
+
   window.browserTranscribe = async function (file, onStatus) {
-    onStatus('LOADING TRANSCRIPTION MODEL (cached after first use)...');
+    const t0 = performance.now();
+    const elapsedSec = () => (performance.now() - t0) / 1000;
+
+    // Model load (with download progress if first visit)
+    let dlStart = performance.now();
     const transcriber = await getTranscriber((p) => {
       if (p.status === 'progress' && p.total) {
-        const pct = (p.loaded / p.total * 100).toFixed(0);
-        onStatus('DOWNLOADING MODEL ' + pct + '% (' + (p.total / 1048576).toFixed(0) + 'MB total)');
+        const loadedMB = (p.loaded / 1048576).toFixed(1);
+        const totalMB  = (p.total / 1048576).toFixed(1);
+        const dlElapsed = (performance.now() - dlStart) / 1000;
+        const rate = p.loaded / Math.max(dlElapsed, 0.5);            // bytes/s
+        const remain = (p.total - p.loaded) / Math.max(rate, 1);
+        const mbps = (rate / 1048576).toFixed(2);
+        onStatus(
+          'MODEL DOWNLOAD ' + loadedMB + ' / ' + totalMB + ' MB · '
+          + mbps + ' MB/s · ' + fmtSec(remain) + ' left · ' + fmtSec(dlElapsed) + ' elapsed'
+        );
       } else if (p.status === 'ready') {
-        onStatus('MODEL READY');
+        onStatus('MODEL READY (cached for next time)');
+      } else if (p.status === 'initiate' || p.status === 'download') {
+        onStatus('LOADING MODEL FILE: ' + (p.file || '...'));
       }
     });
 
-    onStatus('DECODING AUDIO...');
+    // Decode the audio
+    onStatus('DECODING AUDIO... · ' + fmtSec(elapsedSec()) + ' elapsed');
     const audio = await decodeTo16kMono(file);
+    const totalSec = audio.length / 16000;
 
-    onStatus('TRANSCRIBING ' + (audio.length / 16000).toFixed(0) + 's OF AUDIO (in browser)...');
-    const result = await transcriber(audio, {
-      return_timestamps: 'word',
-      chunk_length_s: 30,
-      stride_length_s: 5,
-    });
+    // Manual chunking so we can report progress between chunks
+    const SR = 16000;
+    const CHUNK_SEC = 25;
+    const STRIDE_SEC = 20;                  // 5s overlap
+    const chunkSamples = CHUNK_SEC * SR;
+    const strideSamples = STRIDE_SEC * SR;
 
-    const chunks = result.chunks || [];
-    return chunks
-      .filter(c => c.timestamp && c.timestamp[0] != null && c.text && c.text.trim())
-      .map(c => ({
-        word: c.text.trim(),
-        start: c.timestamp[0],
-        end: c.timestamp[1] != null ? c.timestamp[1] : c.timestamp[0] + 0.3,
-      }));
+    const chunks = [];
+    let s = 0;
+    while (s < audio.length) {
+      const e = Math.min(s + chunkSamples, audio.length);
+      chunks.push({ s, e, t: s / SR });
+      if (e >= audio.length) break;
+      s += strideSamples;
+    }
+
+    onStatus(
+      'AUDIO DECODED: ' + totalSec.toFixed(1) + 's · ' + chunks.length + ' CHUNKS · '
+      + fmtSec(elapsedSec()) + ' elapsed'
+    );
+
+    const allWords = [];
+    const transcribeStart = performance.now();
+    for (let i = 0; i < chunks.length; i++) {
+      const tChunk = (performance.now() - transcribeStart) / 1000;
+      const avgPerChunk = i === 0 ? 0 : tChunk / i;
+      const remain = avgPerChunk * (chunks.length - i);
+      const etaStr = i === 0 ? 'estimating...' : '~' + fmtSec(remain) + ' left';
+      onStatus(
+        'TRANSCRIBING ' + (i + 1) + ' / ' + chunks.length + ' · '
+        + fmtSec(elapsedSec()) + ' elapsed · ' + etaStr
+      );
+
+      const chunkAudio = audio.subarray(chunks[i].s, chunks[i].e);
+      const result = await transcriber(chunkAudio, { return_timestamps: 'word' });
+
+      for (const c of (result.chunks || [])) {
+        if (!c.timestamp || c.timestamp[0] == null) continue;
+        const word = (c.text || '').trim();
+        if (!word) continue;
+        const absStart = c.timestamp[0] + chunks[i].t;
+        const absEnd = (c.timestamp[1] != null ? c.timestamp[1] : c.timestamp[0] + 0.3) + chunks[i].t;
+        // Skip duplicates from the previous chunk's overlap region
+        const last = allWords[allWords.length - 1];
+        if (last && Math.abs(last.start - absStart) < 0.15 && last.word.toLowerCase() === word.toLowerCase()) {
+          continue;
+        }
+        allWords.push({ word, start: absStart, end: absEnd });
+      }
+    }
+
+    onStatus(
+      'TRANSCRIPTION DONE · ' + allWords.length + ' words · '
+      + fmtSec(elapsedSec()) + ' total'
+    );
+    return allWords;
   };
 </script>
 
