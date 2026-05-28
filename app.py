@@ -631,6 +631,10 @@ def _safe_upload_path(name):
     return None
 
 
+AUDIO_EXTS = {'.mp3', '.wav', '.aiff', '.aif', '.flac', '.ogg', '.m4a', '.aac', '.opus'}
+VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpg', '.mpeg'}
+
+
 @app.route('/upload', methods=['POST'])
 def upload_one():
     """Single-file upload endpoint. Each large file gets its own short POST
@@ -640,6 +644,16 @@ def upload_one():
     if not f or not f.filename:
         return jsonify({'error': 'no file'}), 400
     ext = os.path.splitext(f.filename)[1].lower() or '.bin'
+
+    if role == 'song' and ext not in AUDIO_EXTS:
+        return jsonify({
+            'error': f'{f.filename}: SONG must be an audio file ({", ".join(sorted(AUDIO_EXTS))}), got {ext}'
+        }), 400
+    if role in ('video', 'broll') and ext not in VIDEO_EXTS:
+        return jsonify({
+            'error': f'{f.filename}: VIDEO must be a video file ({", ".join(sorted(VIDEO_EXTS))}), got {ext}'
+        }), 400
+
     name = f'{role}_{int(_time.time() * 1000)}_{secrets.token_hex(4)}{ext}'
     p = os.path.join(UPLOAD_DIR, name)
     f.save(p)

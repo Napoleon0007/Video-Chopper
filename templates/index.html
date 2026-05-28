@@ -901,19 +901,46 @@
     gapMode = btn.dataset.mode;
   }
 
+  const AUDIO_EXTS = ['mp3','wav','aiff','aif','flac','ogg','m4a','aac','opus'];
+  const VIDEO_EXTS = ['mp4','mov','avi','mkv','webm','m4v','mpg','mpeg'];
+
+  function extOf(name) {
+    const i = name.lastIndexOf('.');
+    return i < 0 ? '' : name.slice(i + 1).toLowerCase();
+  }
+
+  function validateFile(f, type) {
+    const e = extOf(f.name);
+    if (type === 'song' && !AUDIO_EXTS.includes(e)) {
+      alert('Song must be audio (' + AUDIO_EXTS.join(', ') + '). Got "' + f.name + '"');
+      return false;
+    }
+    if (type === 'video' && !VIDEO_EXTS.includes(e)) {
+      alert('Video must be video (' + VIDEO_EXTS.join(', ') + '). Got "' + f.name + '"');
+      return false;
+    }
+    return true;
+  }
+
   function bindFile(inputId, zoneId, hintId, nameId, type) {
+    function setFile(f, zone, n, hint) {
+      if (!validateFile(f, type)) return;
+      if (type === 'song') songFile = f; else videoFile = f;
+      hint.style.display = 'none';
+      n.textContent = '> ' + f.name;
+      n.style.display = 'block';
+      zone.classList.add('has-file');
+      checkReady();
+    }
+    const zone = document.getElementById(zoneId);
+    const hint = document.getElementById(hintId);
+    const n = document.getElementById(nameId);
+
     document.getElementById(inputId).addEventListener('change', function () {
       const f = this.files[0];
       if (!f) return;
-      if (type === 'song') songFile = f; else videoFile = f;
-      document.getElementById(hintId).style.display = 'none';
-      const n = document.getElementById(nameId);
-      n.textContent = '> ' + f.name;
-      n.style.display = 'block';
-      document.getElementById(zoneId).classList.add('has-file');
-      checkReady();
+      setFile(f, zone, n, hint);
     });
-    const zone = document.getElementById(zoneId);
     zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
     zone.addEventListener('drop', e => {
@@ -921,13 +948,7 @@
       zone.classList.remove('drag-over');
       const f = e.dataTransfer.files[0];
       if (!f) return;
-      if (type === 'song') songFile = f; else videoFile = f;
-      document.getElementById(hintId).style.display = 'none';
-      const n = document.getElementById(nameId);
-      n.textContent = '> ' + f.name;
-      n.style.display = 'block';
-      document.getElementById(zoneId).classList.add('has-file');
-      checkReady();
+      setFile(f, zone, n, hint);
     });
   }
 
