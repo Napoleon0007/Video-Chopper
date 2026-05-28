@@ -845,7 +845,14 @@
     document.getElementById('processBtn').disabled = !(songFile && videoFile);
   }
 
-  async function startProcess() {
+  function fmtBytes(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+    if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+    return (b / 1073741824).toFixed(2) + ' GB';
+  }
+
+  function startProcess() {
     const btn   = document.getElementById('processBtn');
     const panel = document.getElementById('outPanel');
     const fill  = document.getElementById('progFill');
@@ -858,9 +865,11 @@
     fill.className = 'prog-fill';
     fill.style.width = '0%';
     msg.className = 'out-msg';
-    msg.textContent = '> UPLOADING FILES...';
     dl.classList.remove('on');
     badge.style.display = 'none';
+
+    const totalBytes = songFile.size + videoFile.size + brollFiles.reduce((a, f) => a + f.size, 0);
+    msg.textContent = '> UPLOADING ' + fmtBytes(totalBytes) + '...';
 
     const form = new FormData();
     form.append('song', songFile);
@@ -869,23 +878,46 @@
     form.append('sensitivity', (document.getElementById('sensitivity').value / 100).toFixed(2));
     brollFiles.forEach(f => form.append('broll', f));
 
-    try {
-      const res = await fetch('/process', { method: 'POST', body: form });
-      const data = await res.json();
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/process', true);
+
+    const startedAt = Date.now();
+
+    xhr.upload.addEventListener('progress', e => {
+      if (!e.lengthComputable) return;
+      const pct = (e.loaded / e.total) * 100;
+      fill.style.width = pct.toFixed(1) + '%';
+      const elapsed = (Date.now() - startedAt) / 1000;
+      const rate = e.loaded / Math.max(elapsed, 0.5);
+      const remain = (e.total - e.loaded) / Math.max(rate, 1);
+      msg.textContent = '> UPLOAD ' + fmtBytes(e.loaded) + ' / ' + fmtBytes(e.total)
+                      + ' · ' + fmtBytes(rate) + '/s · ' + Math.ceil(remain) + 's left';
+    });
+
+    xhr.upload.addEventListener('load', () => {
+      fill.style.width = '0%';
+      msg.textContent = '> UPLOAD COMPLETE · PROCESSING...';
+    });
+
+    xhr.onload = () => {
+      let data;
+      try { data = JSON.parse(xhr.responseText); } catch { data = { error: 'Bad server response: ' + xhr.status }; }
       if (data.error) {
         msg.className = 'out-msg error';
         msg.textContent = data.error;
         btn.disabled = false;
         return;
       }
-    } catch (e) {
-      msg.className = 'out-msg error';
-      msg.textContent = 'UPLOAD FAILED: ' + e.message;
-      btn.disabled = false;
-      return;
-    }
+      poll = setInterval(pollStatus, 600);
+    };
 
-    poll = setInterval(pollStatus, 600);
+    xhr.onerror = () => {
+      msg.className = 'out-msg error';
+      msg.textContent = 'UPLOAD FAILED: network error';
+      btn.disabled = false;
+    };
+
+    xhr.send(form);
   }
 
   async function pollStatus() {

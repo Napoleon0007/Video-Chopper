@@ -21,7 +21,7 @@ from moviepy import VideoFileClip, AudioFileClip, ImageClip, concatenate_videocl
 from faster_whisper import WhisperModel
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 600 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024  # 4 GB — B-roll batches can be huge
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
@@ -622,4 +622,5 @@ threading.Thread(target=_warmup, daemon=True).start()
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7435))
     print(f'Video Chopper running at http://localhost:{port}')
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # threaded=True so a long upload doesn't block /status polling
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
