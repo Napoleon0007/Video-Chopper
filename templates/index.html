@@ -899,12 +899,19 @@
       msg.textContent = '> UPLOAD COMPLETE · PROCESSING...';
     });
 
-    xhr.onload = () => {
+    xhr.onload = async () => {
       let data;
       try { data = JSON.parse(xhr.responseText); } catch { data = { error: 'Bad server response: ' + xhr.status }; }
       if (data.error) {
-        msg.className = 'out-msg error';
-        msg.textContent = data.error;
+        // If a previous job is hung, auto-reset and tell the user to retry
+        if (data.error && data.error.toLowerCase().includes('already processing')) {
+          try { await fetch('/reset', { method: 'POST' }); } catch {}
+          msg.className = 'out-msg error';
+          msg.textContent = 'PREVIOUS JOB CLEARED — click Process again.';
+        } else {
+          msg.className = 'out-msg error';
+          msg.textContent = data.error;
+        }
         btn.disabled = false;
         return;
       }

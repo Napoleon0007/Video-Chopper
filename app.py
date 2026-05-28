@@ -66,13 +66,17 @@ _whisper_model = None
 _whisper_lock = threading.Lock()
 
 
+_whisper_models = {}
+
+
 def get_whisper(model_name='base'):
-    """Lazy-load Whisper. Cached for the process lifetime."""
-    global _whisper_model
+    """Lazy-load Whisper. Cached per model name for the process lifetime."""
     with _whisper_lock:
-        if _whisper_model is None:
-            _whisper_model = WhisperModel(model_name, device='cpu', compute_type='int8')
-        return _whisper_model
+        m = _whisper_models.get(model_name)
+        if m is None:
+            m = WhisperModel(model_name, device='cpu', compute_type='int8')
+            _whisper_models[model_name] = m
+        return m
 
 
 def upd(**kwargs):
@@ -273,8 +277,15 @@ def best_fuzzy_match(target, candidates_by_norm, min_score=0.72):
 def process(song_path, video_path, gap_mode, sensitivity, model_name='base', broll_paths=None):
     broll_paths = broll_paths or []
     try:
-        upd(status='processing', message='Loading Whisper model...', percent=4)
-        model = get_whisper(model_name)
+        # Song uses 'tiny' (3-4× faster on Railway CPU, accuracy is fine with
+        # the fuzzy matcher). Source video uses 'base' so we still benefit
+        # from the pre-built base cache shipped in the repo.
+        song_model_name = 'tiny'
+        source_model_name = model_name  # default 'base'
+
+        upd(status='processing', message='Loading Whisper models...', percent=4)
+        song_model = get_whisper(song_model_name)
+        source_model = get_whisper(source_model_name)
 
         upd(message='Transcoding audio for transcription...', percent=8)
         song_wav = transcode_to_wav16(song_path)
@@ -283,14 +294,11 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base', bro
         upd(message='Detecting BPM and beat grid...', percent=11)
         bpm, beat_times = estimate_bpm_and_beats(song_wav)
 
-        upd(message=f'Transcribing song ({bpm:.0f} BPM, chunked)...', percent=14)
-        # Chunk only the song — the chopped/repetitive content is what causes
-        # Whisper to bail early. The source video is continuous speech and
-        # transcribes fine in one pass.
-        song_words = cached_transcribe(model, song_wav, model_name, chunked=True)
+        upd(message=f'Transcribing song ({bpm:.0f} BPM, tiny model)...', percent=14)
+        song_words = cached_transcribe(song_model, song_wav, song_model_name, chunked=True)
 
         upd(message='Transcribing original video...', percent=40)
-        orig_words = cached_transcribe(model, orig_wav, model_name, chunked=False, source=True)
+        orig_words = cached_transcribe(source_model, orig_wav, source_model_name, chunked=False, source=True)
 
         os.unlink(song_wav)
         os.unlink(orig_wav)
@@ -598,6 +606,15 @@ def status():
         return jsonify({k: job[k] for k in ('status', 'message', 'percent', 'segments')})
 
 
+@app.route('/reset', methods=['POST', 'GET'])
+def reset():
+    """Force the job state back to idle. Use when a previous job hung and
+    POST /process keeps returning 'Already processing'."""
+    with job_lock:
+        job.update({'status': 'idle', 'message': 'Reset.', 'percent': 0, 'output': None, 'segments': 0})
+    return jsonify({'ok': True})
+
+
 @app.route('/download')
 def download():
     with job_lock:
@@ -608,10 +625,12 @@ def download():
 
 
 def _warmup():
-    """Load Whisper in a background thread so the first request is fast."""
+    """Load Whisper models in a background thread so the first request is fast."""
     try:
+        get_whisper('tiny')
+        print('[warmup] tiny model loaded.')
         get_whisper('base')
-        print('[warmup] Whisper model loaded.')
+        print('[warmup] base model loaded.')
     except Exception as e:
         print(f'[warmup] failed: {e}')
 
