@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import hashlib
 import threading
 import tempfile
 import subprocess
@@ -23,8 +25,38 @@ app.config['MAX_CONTENT_LENGTH'] = 600 * 1024 * 1024
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+CACHE_DIR = os.path.join(BASE_DIR, 'cache')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def file_hash(path):
+    h = hashlib.md5()
+    with open(path, 'rb') as f:
+        while True:
+            buf = f.read(1 << 16)
+            if not buf:
+                break
+            h.update(buf)
+    return h.hexdigest()
+
+
+def cached_transcribe(model, audio_path, model_name, chunked=False):
+    """Transcribe with on-disk cache keyed by file content + model + mode."""
+    h = file_hash(audio_path)
+    mode = 'chunked' if chunked else 'single'
+    cache_path = os.path.join(CACHE_DIR, f'{h}_{model_name}_{mode}.json')
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            return json.load(f)
+    if chunked:
+        words = transcribe_words_chunked(model, audio_path)
+    else:
+        words = transcribe_words(model, audio_path)
+    with open(cache_path, 'w') as f:
+        json.dump(words, f)
+    return words
 
 job = {'status': 'idle', 'message': 'Ready.', 'percent': 0, 'output': None, 'segments': 0}
 job_lock = threading.Lock()
@@ -65,7 +97,7 @@ WHISPER_KWARGS = dict(
     word_timestamps=True,
     vad_filter=False,
     language='en',
-    beam_size=5,
+    beam_size=1,                       # 5 → 1 cuts CPU time ~5x with minimal accuracy loss on clear speech
     no_speech_threshold=0.1,
     compression_ratio_threshold=100.0,
     log_prob_threshold=-10.0,
@@ -91,7 +123,7 @@ def transcribe_words(model, audio_path):
     return words
 
 
-def transcribe_words_chunked(model, audio_path, chunk_sec=20.0, overlap_sec=1.5):
+def transcribe_words_chunked(model, audio_path, chunk_sec=30.0, overlap_sec=2.0):
     """Force full coverage by transcribing fixed-size chunks independently.
 
     Whisper's internal bail-out (hallucination guard, no_speech) sometimes
@@ -170,10 +202,10 @@ def process(song_path, video_path, gap_mode, sensitivity, model_name='base'):
         # Chunk only the song — the chopped/repetitive content is what causes
         # Whisper to bail early. The source video is continuous speech and
         # transcribes fine in one pass.
-        song_words = transcribe_words_chunked(model, song_wav, chunk_sec=30.0, overlap_sec=2.0)
+        song_words = cached_transcribe(model, song_wav, model_name, chunked=True)
 
         upd(message='Transcribing original video...', percent=40)
-        orig_words = transcribe_words(model, orig_wav)
+        orig_words = cached_transcribe(model, orig_wav, model_name, chunked=False)
 
         os.unlink(song_wav)
         os.unlink(orig_wav)
