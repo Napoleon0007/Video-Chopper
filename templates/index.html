@@ -1042,9 +1042,9 @@
 
     xhr.onload = async () => {
       let data;
-      try { data = JSON.parse(xhr.responseText); } catch { data = { error: 'Bad server response: ' + xhr.status }; }
+      try { data = JSON.parse(xhr.responseText); }
+      catch { data = { error: 'HTTP ' + xhr.status + ': ' + (xhr.responseText || '').slice(0, 200) }; }
       if (data.error) {
-        // If a previous job is hung, auto-reset and tell the user to retry
         if (data.error && data.error.toLowerCase().includes('already processing')) {
           try { await fetch('/reset', { method: 'POST' }); } catch {}
           msg.className = 'out-msg error';
@@ -1061,10 +1061,24 @@
 
     xhr.onerror = () => {
       msg.className = 'out-msg error';
-      msg.textContent = 'UPLOAD FAILED: network error';
+      msg.textContent = 'UPLOAD FAILED · status=' + xhr.status + ' · state=' + xhr.readyState
+        + ' · likely upload timeout or connection drop. Try fewer/smaller B-roll files.';
       btn.disabled = false;
     };
 
+    xhr.ontimeout = () => {
+      msg.className = 'out-msg error';
+      msg.textContent = 'UPLOAD TIMEOUT after ' + ((Date.now() - startedAt) / 1000).toFixed(0) + 's';
+      btn.disabled = false;
+    };
+
+    xhr.onabort = () => {
+      msg.className = 'out-msg error';
+      msg.textContent = 'UPLOAD ABORTED';
+      btn.disabled = false;
+    };
+
+    xhr.timeout = 0;  // no client-side timeout
     xhr.send(form);
   }
 
